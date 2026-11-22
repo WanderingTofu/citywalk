@@ -38,12 +38,16 @@ src/
     Chunk.ts              GPU objects of one chunk
     WorldStreamer.ts      the streaming window
   graphics/
-    shaders.ts            procedural material library (GLSL)
-    MaterialLibrary.ts    the five shared materials and their uniforms
-    Props.ts              shared instanced geometry
+    shaders.ts            procedural material library (GLSL): facades, interiors, ground
+    MaterialLibrary.ts    the shared materials and their uniforms
+    SkyModel.ts           atmospheric scattering, on the CPU and as GLSL
+    Lighting.ts           clock, sun and moon positions, derived light and haze colours, shadows
+    Atmosphere.ts         scattering table, sky dome (clouds, stars, moon), environment map, fog
+    PostFX.ts             HDR target, ambient occlusion, bloom, tone mapping, grade
+    VehicleFactory.ts     vehicle engine: body types from specs, two levels of detail
+    TreeFactory.ts        tree engine: species grown from seeds, leaf atlas, far stand-ins
+    Props.ts              shared instanced geometry (lamps, light pools) and the two factories
     LODManager.ts         distance -> LOD with hysteresis
-    Lighting.ts           sun, sky fill, shadows, time-of-day presets
-    Atmosphere.ts         sky dome, fog
   player/
     PlayerController.ts   input, movement, cameras
     CollisionSystem.ts    circle vs. footprint walls in a spatial hash
@@ -73,7 +77,13 @@ player position ──► WorldStreamer.plan()
 
 **Shader facades.** A window is not geometry. Each wall is one quad carrying its length in facade bays, its height, and the building's floor height, storefront height, window pattern and material. The fragment shader draws the rest and antialiases by pixel footprint, fading every pattern to its average before it can alias. Consequences: building count barely affects triangle count; one shader program serves every building in every city; LOD transitions cannot pop facade detail, because that detail was never in the mesh.
 
-**One ground mesh per chunk.** Slab, parks, water, paving, asphalt and rail all lie on y = 0 in a single mesh. A per-vertex layer index becomes a small constant clip-space depth bias in the vertex shader, which orders the layers without z-fighting and without one draw call per layer.
+**One ground mesh per chunk, stacked exactly.** Slab, parks, water, paving, asphalt and rail all lie on y = 0 in a single mesh and overlap freely. A depth bias cannot order them reliably: the margin needed depends on resolution and distance, and a bias large enough to be safe makes the ground bleed over objects when seen from the air. Instead the stacking is a painter's algorithm: triangles are sorted by layer in the index buffer, and the ground shader writes a depth computed from the pixel position and the ground plane alone. Every ground triangle covering a pixel computes the identical depth, so ties are exact and the later triangle wins. The cost is that the ground cannot use early depth rejection.
+
+**Rooms behind the glass.** Each window is a recess: the view ray is followed a few centimetres into the wall to find where it meets the glass (giving a visible reveal that shifts as you move) and then on into a box room, hit analytically, with a back wall, furniture shapes, a ceiling and a floor. Rooms switch their lights as a unit. All of it is arithmetic in the facade shader.
+
+**Light from one model.** Time of day is the position of the sun. Its colour after the atmosphere, the sky, the haze and the fill light on the street all come from the same scattering model, evaluated on the GPU into a lookup table for the sky and on the CPU for the few values the engine needs each frame. The sky is rendered once more into a cube, with a stand-in skyline and street below the horizon, and prefiltered into the environment map, so image-based lighting and reflections always match what is overhead.
+
+**Generators, not assets.** Vehicles are specifications: a roofline, a waistline, a few dimensions. The body is that profile lofted through a cross-section with tumblehome and plan taper, with glazing and trim assigned by where a face falls on the loft. Trees are parameter sets grown from seeds. Each generator emits a near and a far form, and instances are tinted and slightly scaled.
 
 **Pitched roofs without a straight skeleton.** A roof is a height profile across the footprint's short axis (triangle for a gable, trapezoid for a mansard). The footprint is cut along the profile's break lines so each piece is planar, lifted to the profile, and the exposed boundary edges are closed with gable walls. It works on L-shapes and irregular lots and costs a few polygon clips.
 

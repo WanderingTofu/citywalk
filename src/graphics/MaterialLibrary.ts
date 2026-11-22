@@ -128,8 +128,9 @@ export class MaterialLibrary {
   readonly ground: THREE.MeshStandardMaterial;
   readonly tree: THREE.MeshStandardMaterial;
   readonly lamp: THREE.MeshStandardMaterial;
+  private foliage = new Map<THREE.Texture, THREE.MeshStandardMaterial>();
   /** Parked cars: glossy paint tinted per instance. */
-  readonly car: THREE.MeshStandardMaterial;
+  readonly car: THREE.MeshPhysicalMaterial;
   /** Additive pool of light under each street lamp. */
   readonly lampGlow: THREE.ShaderMaterial;
 
@@ -180,8 +181,29 @@ export class MaterialLibrary {
     };
     this.lamp.customProgramCacheKey = () => 'cw-lamp';
 
-    this.car = new THREE.MeshStandardMaterial({ name: 'cw-car', vertexColors: true, roughness: 0.28, metalness: 0.55 });
-    this.car.onBeforeCompile = (shader) => patchFog(shader, u);
+    // Paint is a dielectric under a lacquer, so it gets a clearcoat rather than metalness.
+    // The vehicle meshes tag their parts by vertex colour: pure white is paint (tinted per
+    // instance), bluish-black is glass, everything else keeps its own colour.
+    this.car = new THREE.MeshPhysicalMaterial({ name: 'cw-car', vertexColors: true, clearcoat: 1, clearcoatRoughness: 0.07 });
+    this.car.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying float vCwPaint;\nvarying float vCwGlass;')
+        .replace(
+          '#include <color_vertex>',
+          `#include <color_vertex>
+          vCwPaint = step(0.99, min(color.r, min(color.g, color.b)));
+          vCwGlass = step(color.r, 0.05) * step(color.r * 1.25, color.b);
+          #ifdef USE_INSTANCING_COLOR
+            vColor.rgb = mix(color.rgb, instanceColor.rgb, vCwPaint);
+          #endif`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vCwPaint;\nvarying float vCwGlass;')
+        .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = mix(mix(0.7, 0.06, vCwGlass), 0.38, vCwPaint);')
+        .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(mix(0.1, 0.6, vCwGlass), 0.15, vCwPaint);')
+        .replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\n#ifdef USE_CLEARCOAT\nmaterial.clearcoat *= vCwPaint;\n#endif');
+      patchFog(shader, u);
+    };
     this.car.customProgramCacheKey = () => 'cw-car';
 
     this.lampGlow = new THREE.ShaderMaterial({
@@ -211,6 +233,23 @@ export class MaterialLibrary {
     });
   }
 
+  /**
+   * Material for grown trees: alpha-tested leaf cards and bark from one atlas,
+   * swaying in the same wind as the distant stand-ins.
+   */
+  foliageMaterial(atlas: THREE.Texture): THREE.MeshStandardMaterial {
+    let m = this.foliage.get(atlas);
+    if (!m) {
+      m = new THREE.MeshStandardMaterial({
+        name: 'cw-foliage', map: atlas, alphaTest: 0.42, side: THREE.DoubleSide, vertexColors: true, roughness: 0.85, metalness: 0,
+      });
+      m.onBeforeCompile = this.tree.onBeforeCompile;
+      m.customProgramCacheKey = () => 'cw-foliage';
+      this.foliage.set(atlas, m);
+    }
+    return m;
+  }
+
   /** Per-frame camera state for shaders that reconstruct positions from pixels. */
   setCamera(camera: THREE.PerspectiveCamera, bufferWidth: number, bufferHeight: number): void {
     const u = this.uniforms;
@@ -235,6 +274,7 @@ export class MaterialLibrary {
     this.facade.dispose();
     this.ground.dispose();
     this.tree.dispose();
+    for (const m of this.foliage.values()) m.dispose();
     this.lamp.dispose();
     this.car.dispose();
     this.lampGlow.dispose();

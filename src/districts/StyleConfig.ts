@@ -118,5 +118,7 @@ export interface StyleConfig {
     streetTrees: number;
     /** 0..1, how full the kerbside parking is. */
     parking: number;
+    /** Which tree species grow here and how often: [broadleaf, plane, conifer, palm] weights. */
+    vegetation: [number, number, number, number];
   };
 }

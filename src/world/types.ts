@@ -112,11 +112,11 @@ export interface ChunkGeometry {
   buildings: MeshData | null;
   /** Present only when the request asked for it (ground is LOD independent). */
   ground: MeshData | null;
-  /** Instances: x, y, z, scale, rotation, variant. */
+  /** Instances: x, y, z, scale, rotation, variant, species. */
   trees: Float32Array;
   /** Instances: x, y, z, rotation. */
   lamps: Float32Array;
-  /** Parked cars: x, y, z, rotation, colour index, length scale. */
+  /** Parked vehicles: x, y, z, rotation, colour index, body type, variation 0..1. */
   cars: Float32Array;
   buildMs: number;
 }

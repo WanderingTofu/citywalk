@@ -92,6 +92,8 @@ const RULES: Rule[] = [
   { match: /dense|canyon|narrow/, apply: (s) => (s.atmosphere.enclosure = Math.max(s.atmosphere.enclosure, 0.75)) },
   { match: /weathered|worn|aged|gritty/, apply: (s) => (s.atmosphere.weathering = 0.85) },
   { match: /tree|leafy|palm|garden/, apply: (s) => (s.atmosphere.streetTrees = 0.5) },
+  { match: /palm|tropical/, apply: (s) => (s.atmosphere.vegetation = [3, 1, 0, 6]) },
+  { match: /pine|cedar|cypress|conifer/, apply: (s) => (s.atmosphere.vegetation = [3, 1, 5, 0]) },
 ];
 
 /** Compile a free-text district description into a structured style. Pure and deterministic. */
@@ -104,6 +106,7 @@ export function compileStyle(district: string, prompt: string): StyleConfig {
   s.atmosphere.signageDensity = 0.4;
   s.atmosphere.clouds = 0.35;
   s.atmosphere.parking = 0.35;
+  s.atmosphere.vegetation = [4, 4, 1, 0];
   s.ground.paving = 'slabs';
   s.ground.wetness = 0.25;
   s.atmosphere.enclosure = 0.5;

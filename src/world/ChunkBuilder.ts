@@ -49,8 +49,8 @@ export function buildChunkGeometry(chunk: ChunkData, style: StyleConfig, opts: B
     ground,
     trees: props.trees,
     lamps: props.lamps,
-    // Cars only exist inside the full-detail ring.
-    cars: opts.lod === 0 ? props.cars : new Float32Array(0),
+    // Vehicles are detailed in the full-detail ring and simple silhouettes one ring out.
+    cars: opts.lod < 2 ? props.cars : new Float32Array(0),
     buildMs: performance.now() - t0,
   };
 }

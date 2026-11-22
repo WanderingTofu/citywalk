@@ -52,6 +52,7 @@ export const SHIBUYA: StyleConfig = {
     lampSpacing: 28,
     streetTrees: 0.25,
     parking: 0.25,
+    vegetation: [3, 5, 1, 0],
   },
 };
 
@@ -99,6 +100,7 @@ export const GION: StyleConfig = {
     lampSpacing: 22,
     streetTrees: 0.35,
     parking: 0.08,
+    vegetation: [6, 1, 3, 0],
   },
 };
 
@@ -146,6 +148,7 @@ export const LE_MARAIS: StyleConfig = {
     lampSpacing: 30,
     streetTrees: 0.3,
     parking: 0.5,
+    vegetation: [2, 7, 0, 0],
   },
 };
 
@@ -195,6 +198,7 @@ export const MANHATTAN: StyleConfig = {
     lampSpacing: 32,
     streetTrees: 0.3,
     parking: 0.55,
+    vegetation: [3, 6, 1, 0],
   },
 };
 
@@ -243,6 +247,7 @@ export const SUKHUMVIT: StyleConfig = {
     lampSpacing: 34,
     streetTrees: 0.45,
     parking: 0.45,
+    vegetation: [4, 1, 0, 5],
   },
 };
 
@@ -292,6 +297,7 @@ export const DTLA: StyleConfig = {
     lampSpacing: 36,
     streetTrees: 0.4,
     parking: 0.5,
+    vegetation: [2, 2, 0, 6],
   },
 };
 
@@ -341,5 +347,6 @@ export const CHICAGO_LOOP: StyleConfig = {
     lampSpacing: 30,
     streetTrees: 0.3,
     parking: 0.45,
+    vegetation: [4, 5, 1, 0],
   },
 };

@@ -13,11 +13,11 @@ import { AreaKind, RoadKind, type ChunkData } from './types';
  */
 
 export interface PropPlacement {
-  /** x, y, z, scale, rotation, variant */
+  /** x, y, z, scale, rotation, variant, species */
   trees: Float32Array;
   /** x, y, z, rotation */
   lamps: Float32Array;
-  /** x, y, z, rotation, colour index, length scale */
+  /** x, y, z, rotation, colour index, body type, variation 0..1 */
   cars: Float32Array;
 }
 
@@ -26,7 +26,19 @@ const MAX_LAMPS = 400;
 const MAX_CARS = 260;
 /** Kerb length one parked car takes up, meters. */
 const CAR_SLOT = 6.1;
-export const CAR_COLORS = 10;
+/** Number of paint colours and the relative frequency of each body type; kept in step with graphics/VehicleFactory. */
+const CAR_COLORS = 16;
+const TYPE_WEIGHTS = [26, 18, 20, 7, 9, 5, 3, 4, 6, 0];
+const TYPE_TOTAL = TYPE_WEIGHTS.reduce((a, b) => a + b, 0);
+
+function pickType(h: number): number {
+  let r = h % TYPE_TOTAL;
+  for (let i = 0; i < TYPE_WEIGHTS.length; i++) {
+    r -= TYPE_WEIGHTS[i];
+    if (r < 0) return i;
+  }
+  return 0;
+}
 
 export function generateProps(chunk: ChunkData, style: StyleConfig, ox: number, oz: number): PropPlacement {
   const seed = hash2(chunk.cx, chunk.cz);
@@ -44,9 +56,22 @@ export function generateProps(chunk: ChunkData, style: StyleConfig, ox: number, 
     }
     return false;
   };
-  const tree = (x: number, z: number, scale: number) => {
-    if (trees.length >= MAX_TREES * 6) return;
-    trees.push(x - ox, 0, z - oz, scale, rng.next() * Math.PI * 2, rng.int(0, 2));
+  // Species: parks take the district's whole mix, streets only the species that are planted along them.
+  const mix = style.atmosphere.vegetation;
+  const pick = (weights: number[]): number => {
+    let r = rng.next() * weights.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < weights.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return i;
+    }
+    return 0;
+  };
+  const parkMix = mix;
+  const streetMix = [mix[0] * 0.3, mix[1], 0, mix[3] * 1.5];
+  if (streetMix[1] + streetMix[3] === 0) streetMix[0] = 1;
+  const tree = (x: number, z: number, scale: number, street = false) => {
+    if (trees.length >= MAX_TREES * 7) return;
+    trees.push(x - ox, 0, z - oz, scale, rng.next() * Math.PI * 2, rng.int(0, 8), pick(street ? streetMix : parkMix));
   };
 
   for (let i = 0; i < chunk.trees.length; i += 2) tree(chunk.trees[i], chunk.trees[i + 1], rng.range(0.85, 1.3));
@@ -87,13 +112,13 @@ export function generateProps(chunk: ChunkData, style: StyleConfig, ox: number, 
           const t = dist / len;
           for (const side of [1, -1]) {
             const h = hash2(hash2(seed, r.id | 0), slot * 2 + (side > 0 ? 1 : 0));
-            if ((h % 1000) / 1000 >= parking || cars.length >= MAX_CARS * 6) continue;
+            if ((h % 1000) / 1000 >= parking || cars.length >= MAX_CARS * 7) continue;
             const x = x0 + dx * t + (-dz / len) * offset * side;
             const z = z0 + dz * t + (dx / len) * offset * side;
             if (blocked(x, z)) continue;
             // Cars face the direction of travel on their side of the road.
             const heading = Math.atan2(dx * side, dz * side);
-            cars.push(x - ox, 0, z - oz, heading, (h >>> 10) % CAR_COLORS, 0.92 + ((h >>> 16) % 100) / 500);
+            cars.push(x - ox, 0, z - oz, heading, (h >>> 10) % CAR_COLORS, pickType(h >>> 14), ((h >>> 20) % 1000) / 1000);
           }
           dist += CAR_SLOT;
           slot++;
@@ -132,7 +157,7 @@ export function generateProps(chunk: ChunkData, style: StyleConfig, ox: number, 
         if (streetTrees && rng.next() < style.atmosphere.streetTrees) {
           const tx = x0 + dx * t + px * (offset + 0.6) * -side + (dx / len) * spacing * 0.4;
           const tz = z0 + dz * t + pz * (offset + 0.6) * -side + (dz / len) * spacing * 0.4;
-          if (!blocked(tx, tz)) tree(tx, tz, rng.range(0.7, 1.05));
+          if (!blocked(tx, tz)) tree(tx, tz, rng.range(0.8, 1.1), true);
         }
         side = -side;
         dist += spacing;
