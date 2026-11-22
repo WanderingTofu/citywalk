@@ -15,6 +15,9 @@ import {
  * Variation comes from vertex attributes and shared uniforms, never from
  * per-object materials, so shader programs and GPU state changes stay
  * constant no matter how much city is loaded.
+ *
+ * All of them are three.js standard PBR materials with extra shading injected,
+ * so they are lit by the same sun, shadows and sky-derived environment map.
  */
 
 export interface SharedUniforms {
@@ -24,11 +27,47 @@ export interface SharedUniforms {
   uLit: { value: number };
   uWarmth: { value: number };
   uWeather: { value: number };
-  uSkyTop: { value: THREE.Color };
-  uSkyHorizon: { value: THREE.Color };
+  /** How enclosed the streets are, 0..1: dims skylight on the ground and lower walls. */
+  uStreetAO: { value: number };
+  /** Camera matrices and drawing-buffer size, for the ground's analytic depth. */
+  uInvViewProj: { value: THREE.Matrix4 };
+  uViewProj: { value: THREE.Matrix4 };
+  uViewport: { value: THREE.Vector2 };
+  /** Standing water on the streets, 0..1. */
+  uWet: { value: number };
+  /** 0 = stone setts, 1 = concrete slabs. */
+  uPaving: { value: number };
+  /** Sky radiance overhead, for window reflections. */
+  uSkyZenith: { value: THREE.Color };
+  /** Haze colour when looking toward the light source. */
+  uFogSun: { value: THREE.Color };
+  /** Direction to the light source in view space. */
+  uSunDirView: { value: THREE.Vector3 };
 }
 
-function patch(
+const FOG_DECL = /* glsl */ `
+uniform vec3 uFogSun;
+uniform vec3 uSunDirView;
+`;
+
+/** Fog whose colour depends on view direction: haze glows toward the sun, as real aerosols do. */
+const FOG_BODY = /* glsl */ `
+#ifdef USE_FOG
+  float cwFogF = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+  float cwFogS = pow(max(dot(normalize(-vViewPosition), uSunDirView), 0.0), 6.0);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, mix(fogColor, uFogSun, cwFogS), cwFogF);
+#endif
+`;
+
+function patchFog(shader: { fragmentShader: string; uniforms: Record<string, THREE.IUniform> }, u: SharedUniforms): void {
+  shader.uniforms.uFogSun = u.uFogSun;
+  shader.uniforms.uSunDirView = u.uSunDirView;
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\n${FOG_DECL}`)
+    .replace('#include <fog_fragment>', FOG_BODY);
+}
+
+function patchSurface(
   material: THREE.MeshStandardMaterial,
   uniforms: SharedUniforms,
   vertexDecl: string,
@@ -50,9 +89,17 @@ function patch(
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = cwMetal;')
       .replace(
         '#include <normal_fragment_maps>',
-        '#include <normal_fragment_maps>\nif (cwBumpK > 0.0) normal = cwBump(normal, -vViewPosition, cwHeight, cwBumpK);',
+        `#include <normal_fragment_maps>
+        if (cwUseN > 0.5) normal = normalize((viewMatrix * vec4(cwWorldN, 0.0)).xyz);
+        else if (cwBumpK > 0.0) normal = cwBump(normal, -vViewPosition, cwHeight, cwBumpK);`,
       )
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += cwEmit;');
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += cwEmit;')
+      // Occlusion applies to skylight only, never to direct sun.
+      .replace(
+        '#include <aomap_fragment>',
+        '#include <aomap_fragment>\nreflectedLight.indirectDiffuse *= cwAO;\nreflectedLight.indirectSpecular *= mix(cwAO, 1.0, 0.5);',
+      );
+    patchFog(shader, uniforms);
   };
 }
 
@@ -64,8 +111,15 @@ export class MaterialLibrary {
     uLit: { value: 0.5 },
     uWarmth: { value: 0.5 },
     uWeather: { value: 0.4 },
-    uSkyTop: { value: new THREE.Color(0.2, 0.4, 0.8) },
-    uSkyHorizon: { value: new THREE.Color(0.7, 0.8, 0.9) },
+    uStreetAO: { value: 0.5 },
+    uInvViewProj: { value: new THREE.Matrix4() },
+    uViewProj: { value: new THREE.Matrix4() },
+    uViewport: { value: new THREE.Vector2(1, 1) },
+    uWet: { value: 0.25 },
+    uPaving: { value: 1 },
+    uSkyZenith: { value: new THREE.Color(0.2, 0.3, 0.5) },
+    uFogSun: { value: new THREE.Color(1, 1, 1) },
+    uSunDirView: { value: new THREE.Vector3(0, 1, 0) },
   };
 
   /** All building surfaces: walls, roofs, rooftop plant, signs. */
@@ -74,26 +128,45 @@ export class MaterialLibrary {
   readonly ground: THREE.MeshStandardMaterial;
   readonly tree: THREE.MeshStandardMaterial;
   readonly lamp: THREE.MeshStandardMaterial;
+  /** Parked cars: glossy paint tinted per instance. */
+  readonly car: THREE.MeshStandardMaterial;
   /** Additive pool of light under each street lamp. */
   readonly lampGlow: THREE.ShaderMaterial;
 
   constructor() {
+    const u = this.uniforms;
     this.facade = new THREE.MeshStandardMaterial({ name: 'cw-facade' });
-    patch(this.facade, this.uniforms, VERTEX_DECL('vec3', 'vec4', true), VERTEX_BODY(true), FACADE_FRAGMENT_DECL, FACADE_FRAGMENT_BODY);
+    patchSurface(this.facade, u, VERTEX_DECL('vec3', 'vec4', true), VERTEX_BODY(true), FACADE_FRAGMENT_DECL, FACADE_FRAGMENT_BODY);
     this.facade.customProgramCacheKey = () => 'cw-facade';
 
     this.ground = new THREE.MeshStandardMaterial({ name: 'cw-ground' });
-    patch(
-      this.ground, this.uniforms, VERTEX_DECL('vec4', 'float', false), VERTEX_BODY(false), GROUND_FRAGMENT_DECL, GROUND_FRAGMENT_BODY,
-      // Stacked ground layers share y = 0; a constant clip-space bias per layer orders them without z-fighting.
-      'gl_Position.z -= cwA.w * 6e-6 * gl_Position.w;',
+    patchSurface(
+      this.ground, u, VERTEX_DECL('vec4', 'float', false), VERTEX_BODY(false), GROUND_FRAGMENT_DECL, GROUND_FRAGMENT_BODY,
     );
     this.ground.customProgramCacheKey = () => 'cw-ground';
 
-    this.tree = new THREE.MeshStandardMaterial({ name: 'cw-tree', vertexColors: true, roughness: 0.95, metalness: 0 });
+    this.tree = new THREE.MeshStandardMaterial({ name: 'cw-tree', vertexColors: true, roughness: 0.9, metalness: 0 });
+    this.tree.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = u.uTime;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace(
+          '#include <begin_vertex>',
+          // Wind: the whole crown leans and each part of it flutters, more the higher up it is.
+          `#include <begin_vertex>
+          #ifdef USE_INSTANCING
+            vec3 cwRoot = instanceMatrix[3].xyz;
+            float cwLift = max(position.y - 2.2, 0.0);
+            float cwPhase = cwRoot.x * 0.31 + cwRoot.z * 0.23;
+            transformed.x += (sin(uTime * 1.3 + cwPhase) * 0.035 + sin(uTime * 4.1 + position.z * 3.0 + cwPhase) * 0.012) * cwLift;
+            transformed.z += (cos(uTime * 1.1 + cwPhase * 1.7) * 0.028 + sin(uTime * 3.7 + position.x * 3.0) * 0.012) * cwLift;
+          #endif`,
+        );
+      patchFog(shader, u);
+    };
+    this.tree.customProgramCacheKey = () => 'cw-tree';
 
     this.lamp = new THREE.MeshStandardMaterial({ name: 'cw-lamp', vertexColors: true, roughness: 0.6, metalness: 0.4 });
-    const u = this.uniforms;
     this.lamp.onBeforeCompile = (shader) => {
       shader.uniforms.uNight = u.uNight;
       shader.fragmentShader = shader.fragmentShader
@@ -101,10 +174,15 @@ export class MaterialLibrary {
         .replace(
           '#include <emissivemap_fragment>',
           // The lamp head is the only bright-coloured part of the geometry.
-          '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vColor.rgb * step(0.9, vColor.r) * (0.15 + 3.0 * uNight);',
+          '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vColor.rgb * step(0.9, vColor.r) * (0.1 + 2.5 * uNight);',
         );
+      patchFog(shader, u);
     };
     this.lamp.customProgramCacheKey = () => 'cw-lamp';
+
+    this.car = new THREE.MeshStandardMaterial({ name: 'cw-car', vertexColors: true, roughness: 0.28, metalness: 0.55 });
+    this.car.onBeforeCompile = (shader) => patchFog(shader, u);
+    this.car.customProgramCacheKey = () => 'cw-car';
 
     this.lampGlow = new THREE.ShaderMaterial({
       name: 'cw-lamp-glow',
@@ -128,9 +206,17 @@ export class MaterialLibrary {
           float d = length(vUv - 0.5) * 2.0;
           float a = pow(max(1.0 - d, 0.0), 2.2);
           vec3 col = mix(vec3(0.8, 0.9, 1.0), vec3(1.0, 0.72, 0.4), uWarmth);
-          gl_FragColor = vec4(col * a * uNight * 0.55, 1.0);
+          gl_FragColor = vec4(col * a * uNight * 0.12, 1.0);
         }`,
     });
+  }
+
+  /** Per-frame camera state for shaders that reconstruct positions from pixels. */
+  setCamera(camera: THREE.PerspectiveCamera, bufferWidth: number, bufferHeight: number): void {
+    const u = this.uniforms;
+    u.uViewProj.value.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    u.uInvViewProj.value.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
+    u.uViewport.value.set(bufferWidth, bufferHeight);
   }
 
   /** District style -> shader parameters. Geometry is untouched. */
@@ -140,6 +226,9 @@ export class MaterialLibrary {
     this.uniforms.uLit.value = a.litWindows;
     this.uniforms.uWarmth.value = a.lightWarmth;
     this.uniforms.uWeather.value = a.weathering;
+    this.uniforms.uStreetAO.value = a.enclosure;
+    this.uniforms.uWet.value = style.ground.wetness;
+    this.uniforms.uPaving.value = style.ground.paving === 'slabs' ? 1 : 0;
   }
 
   dispose(): void {
@@ -147,6 +236,7 @@ export class MaterialLibrary {
     this.ground.dispose();
     this.tree.dispose();
     this.lamp.dispose();
+    this.car.dispose();
     this.lampGlow.dispose();
   }
 }

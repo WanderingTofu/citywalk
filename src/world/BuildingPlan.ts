@@ -41,12 +41,10 @@ export interface BuildingPlan {
   /** Center of the footprint across `axis` (projected coordinate). */
   midSpan: number;
   sign: boolean;
+  /** A canvas awning over the shopfront on the main facade. */
+  awning: boolean;
 }
 
-const MINOR_KINDS = new Set([
-  'garage', 'garages', 'shed', 'hut', 'roof', 'kiosk', 'carport', 'toilets', 'greenhouse', 'cabin',
-  'bicycle_parking', 'service', 'container', 'tent',
-]);
 
 export function srgbToLinear(hex: number): [number, number, number] {
   const f = (c: number) => {
@@ -63,7 +61,8 @@ function vary(c: [number, number, number], k: number): [number, number, number] 
 export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPlan {
   const rng = new Rng(foldId(b.id));
   const arch = style.architecture;
-  const minor = MINOR_KINDS.has(b.kind) || b.area < 22;
+  const use = b.use ?? 'unknown';
+  const minor = use === 'minor' || b.area < 22;
 
   // --- height -------------------------------------------------------------
   let total: number;
@@ -81,8 +80,12 @@ export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPl
       const h = style.heights;
       const areaF = Math.min(Math.max(Math.sqrt(b.area / h.areaRef), 0.35), 1.6);
       const t = Math.pow(rHeight, h.bias);
-      const levels = Math.max(1, Math.round(h.minLevels + (h.maxLevels - h.minLevels) * t * areaF));
-      total = levels * arch.floorHeight;
+      let levels = Math.max(1, Math.round(h.minLevels + (h.maxLevels - h.minLevels) * t * areaF));
+      // Use narrows the estimate: houses stay low, sheds and plants are one or two tall storeys.
+      if (use === 'house') levels = Math.min(levels, 2 + (rHeight > 0.7 ? 1 : 0));
+      else if (use === 'industrial') levels = Math.min(levels, 2);
+      else if (use === 'parking') levels = Math.min(Math.max(levels, 3), 7);
+      total = levels * (use === 'industrial' ? 5.5 : arch.floorHeight);
     }
   }
   const baseY = b.minHeight > 0 && b.minHeight < total - 2 ? b.minHeight : 0;
@@ -118,12 +121,17 @@ export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPl
 
   // --- materials ----------------------------------------------------------
   let matName: WallMaterial = rng.weighted(style.materials);
+  const rTower = rng.next();
   if (tower) {
-    const rTower = rng.next();
     if (rTower < 0.6 && style.palette.glass) matName = 'glass';
     else if (rTower < 0.8 && style.palette.metal) matName = 'metal';
-  } else {
-    rng.next();
+  } else if (use === 'office' && rTower < 0.45 && style.palette.glass) {
+    matName = 'glass';
+  } else if ((use === 'industrial' || use === 'parking') && style.palette.concrete) {
+    matName = rTower < 0.3 && style.palette.metal ? 'metal' : 'concrete';
+  } else if (use === 'civic' && rTower < 0.6) {
+    if (style.palette.stone) matName = 'stone';
+    else if (style.palette.brick) matName = 'brick';
   }
   const palette = style.palette[matName] ?? [0xb0b0b0];
   const tint = vary(srgbToLinear(rng.pick(palette)), rng.range(0.9, 1.08));
@@ -133,12 +141,25 @@ export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPl
   if (matName === 'glass') pattern = WindowPattern.curtain;
   if (pattern === WindowPattern.lattice && matName !== 'wood' && matName !== 'plaster') pattern = WindowPattern.grid;
   if (pattern === WindowPattern.french && (matName === 'metal' || matName === 'concrete')) pattern = WindowPattern.grid;
+  if (!tower && pattern === WindowPattern.grid) {
+    // Offices read as banded glass, flats get balconies.
+    if (use === 'office' && rTower > 0.3) pattern = WindowPattern[arch.towerPattern];
+    else if (use === 'apartments' && rTower > 0.4) pattern = WindowPattern.french;
+  }
+  if (use === 'parking') pattern = WindowPattern.ribbon;
+  if (use === 'industrial') pattern = rTower < 0.6 ? WindowPattern.none : WindowPattern.ribbon;
   if (minor) pattern = WindowPattern.none;
 
   const wallH = wallTop - baseY;
   let groundH = 0;
   const rStore = rng.next();
-  if (!minor && arch.groundFloorHeight > 0 && baseY === 0 && rStore < arch.storefronts && wallH >= arch.groundFloorHeight + arch.floorHeight * 0.8) {
+  const storeChance =
+    use === 'retail' || use === 'commercial' ? Math.max(arch.storefronts, 0.95)
+    : use === 'house' || use === 'industrial' || use === 'civic' || use === 'parking' ? 0
+    : use === 'apartments' ? arch.storefronts * 0.4
+    : use === 'office' ? arch.storefronts * 0.6
+    : arch.storefronts;
+  if (!minor && arch.groundFloorHeight > 0 && baseY === 0 && rStore < storeChance && wallH >= arch.groundFloorHeight + arch.floorHeight * 0.8) {
     groundH = arch.groundFloorHeight;
   }
   const floors = Math.max(1, Math.round((wallH - groundH) / arch.floorHeight));
@@ -148,7 +169,10 @@ export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPl
   const setbackAt = tower && b.rings.length === 1 && b.area > 260 && rSet < arch.setbacks ? 0.5 + rng.next() * 0.25 : 0;
 
   const rSign = rng.next();
-  const sign = groundH > 0 && wallH > 9 && rSign < style.atmosphere.signageDensity * 0.55;
+  const sign = groundH > 0 && wallH > 9 && rSign < style.atmosphere.signageDensity * (use === 'retail' || use === 'commercial' ? 0.9 : 0.5);
+
+  const rAwning = rng.next();
+  const awning = groundH > 0 && rAwning < (use === 'retail' || use === 'commercial' ? 0.55 : 0.3);
 
   return {
     baseY,
@@ -173,6 +197,7 @@ export function planBuilding(b: BuildingFeature, style: StyleConfig): BuildingPl
     halfSpan,
     midSpan,
     sign,
+    awning,
   };
 }
 

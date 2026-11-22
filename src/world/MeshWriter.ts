@@ -13,12 +13,19 @@ export class MeshWriter {
   private b: number[] = [];
   private c: number[] = [];
   private idx: number[] = [];
+  private keys: number[] = [];
+  private sorted = true;
   private count = 0;
 
   /** Values applied to every vertex pushed until changed. */
   color: [number, number, number] = [1, 1, 1];
   attrB: number[] = [];
   attrC: number[] = [];
+  /**
+   * Draw-order key for triangles pushed from now on. The finished index buffer
+   * is ordered by key (stable), which is how coplanar ground layers are stacked.
+   */
+  order = 0;
 
   constructor(private readonly hasC: boolean) {}
 
@@ -39,11 +46,30 @@ export class MeshWriter {
   }
 
   tri(i0: number, i1: number, i2: number): void {
+    const n = this.keys.length;
+    if (n > 0 && this.order < this.keys[n - 1]) this.sorted = false;
     this.idx.push(i0, i1, i2);
+    this.keys.push(this.order);
   }
 
   quad(i0: number, i1: number, i2: number, i3: number): void {
-    this.idx.push(i0, i1, i2, i0, i2, i3);
+    this.tri(i0, i1, i2);
+    this.tri(i0, i2, i3);
+  }
+
+  private orderedIndex(): Uint32Array {
+    const out = new Uint32Array(this.idx.length);
+    if (this.sorted) {
+      out.set(this.idx);
+      return out;
+    }
+    const tris = this.keys.map((_, i) => i).sort((a, b) => this.keys[a] - this.keys[b] || a - b);
+    tris.forEach((t, k) => {
+      out[k * 3] = this.idx[t * 3];
+      out[k * 3 + 1] = this.idx[t * 3 + 1];
+      out[k * 3 + 2] = this.idx[t * 3 + 2];
+    });
+    return out;
   }
 
   finish(): MeshData | null {
@@ -54,7 +80,7 @@ export class MeshWriter {
       color: new Float32Array(this.col),
       a: new Float32Array(this.a),
       b: new Float32Array(this.b),
-      index: new Uint32Array(this.idx),
+      index: this.orderedIndex(),
     };
     if (this.hasC) data.c = new Float32Array(this.c);
     return data;

@@ -58,6 +58,7 @@ scope.onmessage = async (e: MessageEvent<{ id: number; req: WorkerRequest }>) =>
         ...meshTransferables(result.ground),
         result.trees.buffer as ArrayBuffer,
         result.lamps.buffer as ArrayBuffer,
+        result.cars.buffer as ArrayBuffer,
       ]);
     }
   } catch (err) {

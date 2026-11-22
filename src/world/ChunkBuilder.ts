@@ -37,7 +37,9 @@ export function buildChunkGeometry(chunk: ChunkData, style: StyleConfig, opts: B
     ground = gw.finish();
   }
 
-  const props = opts.props ? generateProps(chunk, style, ox, oz) : { trees: new Float32Array(0), lamps: new Float32Array(0) };
+  const props = opts.props
+    ? generateProps(chunk, style, ox, oz)
+    : { trees: new Float32Array(0), lamps: new Float32Array(0), cars: new Float32Array(0) };
 
   return {
     cx: chunk.cx,
@@ -47,6 +49,8 @@ export function buildChunkGeometry(chunk: ChunkData, style: StyleConfig, opts: B
     ground,
     trees: props.trees,
     lamps: props.lamps,
+    // Cars only exist inside the full-detail ring.
+    cars: opts.lod === 0 ? props.cars : new Float32Array(0),
     buildMs: performance.now() - t0,
   };
 }

@@ -1,5 +1,5 @@
 import type { StyleConfig } from '../districts/StyleConfig';
-import { DTLA, GION, LE_MARAIS, MANHATTAN, SHIBUYA, SUKHUMVIT } from '../districts/presets';
+import { CHICAGO_LOOP, DTLA, GION, LE_MARAIS, MANHATTAN, SHIBUYA, SUKHUMVIT } from '../districts/presets';
 
 export interface DistrictConfig {
   id: string;
@@ -61,6 +61,13 @@ export const CITIES: CityConfig[] = [
     id: 'kyoto',
     name: 'Kyoto',
     districts: [{ id: 'gion', name: 'Gion', spawn: { lat: 35.00372, lon: 135.77515 }, heading: 180, style: GION }],
+  },
+  {
+    id: 'chicago',
+    name: 'Chicago',
+    districts: [
+      { id: 'the-loop', name: 'The Loop', spawn: { lat: 41.88197, lon: -87.62785 }, heading: 0, style: CHICAGO_LOOP },
+    ],
   },
 ];
 

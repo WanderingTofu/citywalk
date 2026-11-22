@@ -56,6 +56,8 @@ export interface WorldDescriptor {
 /** Seconds of player motion to look ahead when deciding what to load. */
 const PREDICT_SECONDS = 2.5;
 const PLAN_INTERVAL = 0.2;
+/** How much further away a chunk directly behind the camera counts as (0.5 = half as far again). */
+const BEHIND_PENALTY = 0.5;
 /** Concurrent tile downloads; kept low out of respect for the public Overpass servers. */
 const MAX_TILE_LOADS = 2;
 /** Main-thread budget per frame for handing finished geometry to the GPU. */
@@ -134,6 +136,9 @@ export class WorldStreamer {
     return !!c && c.lod === 0;
   }
 
+  /**
+   * `pos` is the camera's ground position with its height in y; `forward` its horizontal view direction.
+   */
   update(dt: number, pos: THREE.Vector3, vel: THREE.Vector3, forward: THREE.Vector3): void {
     if (!this.world) return;
     this.applyReady();
@@ -169,18 +174,25 @@ export class WorldStreamer {
     for (let cz = c0z; cz <= c1z; cz++) {
       for (let cx = c0x; cx <= c1x; cx++) {
         const dNow = distanceToChunk(pos.x, pos.z, cx, cz);
-        const d = Math.min(dNow, distanceToChunk(this.predicted.x, this.predicted.z, cx, cz));
+        const dGround = Math.min(dNow, distanceToChunk(this.predicted.x, this.predicted.z, cx, cz));
         const key = chunkKey(cx, cz);
         const chunk = this.chunks.get(key);
-        const lod = selectLod(d, q, chunk ? chunk.lod : -1);
-        if (lod === -1) continue;
-        keep.add(key);
 
-        // Visibility bias: what the player is facing loads before what is behind.
+        // The detail bubble. Full detail is spent where the camera can use it:
+        //  - height counts as distance, so a drone high above sees a coarser city;
+        //  - beyond the player's immediate surroundings, what is behind the camera
+        //    is treated as further away than what is in front of it.
         const toX = (cx + 0.5) * CHUNK_SIZE - pos.x;
         const toZ = (cz + 0.5) * CHUNK_SIZE - pos.z;
         const len = Math.hypot(toX, toZ) || 1;
         const facing = (toX * forward.x + toZ * forward.z) / len;
+        const behind = dGround > CHUNK_SIZE * 0.6 ? Math.min(1, Math.max(0, (0.15 - facing) / 0.6)) : 0;
+        const d = Math.hypot(dGround, Math.max(0, pos.y - 40) * 0.8) * (1 + BEHIND_PENALTY * behind);
+
+        const lod = selectLod(d, q, chunk ? chunk.lod : -1);
+        if (lod === -1) continue;
+        keep.add(key);
+        // What the player is facing also loads first.
         const priority = d - (facing > 0.3 ? 80 : 0);
 
         const t = tileCoordOfChunk(cx, cz);
@@ -194,7 +206,7 @@ export class WorldStreamer {
           continue;
         }
 
-        const props = wantsProps(dNow, q, chunk ? chunk.hasProps : false);
+        const props = wantsProps(d, q, chunk ? chunk.hasProps : false);
         if (!chunk || chunk.lod !== lod || chunk.hasProps !== props) {
           if (chunk?.pending) continue;
           // Chunks with nothing on screen yet outrank LOD refinements of visible ones.

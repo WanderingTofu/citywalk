@@ -16,9 +16,19 @@ export interface BuildingFeature {
   minHeight: number;
   /** OSM `building=*` value ("yes", "retail", "garage", ...). */
   kind: string;
+  /** What the building is used for, classified from its tags. Drives facade and height rules. */
+  use: BuildingUse;
   /** Footprint area in m^2. */
   area: number;
 }
+
+/**
+ * Coarse land use of a building. The classes follow the residential /
+ * commercial / office / industrial split used by Osyanne's CS2 OSM Toolkit,
+ * reduced to what changes how a facade should look.
+ */
+export type BuildingUse =
+  | 'unknown' | 'house' | 'apartments' | 'retail' | 'commercial' | 'office' | 'industrial' | 'civic' | 'parking' | 'minor';
 
 export const enum RoadKind {
   Road = 0,
@@ -106,5 +116,7 @@ export interface ChunkGeometry {
   trees: Float32Array;
   /** Instances: x, y, z, rotation. */
   lamps: Float32Array;
+  /** Parked cars: x, y, z, rotation, colour index, length scale. */
+  cars: Float32Array;
   buildMs: number;
 }

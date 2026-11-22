@@ -156,6 +156,22 @@ export class CollisionSystem {
     return hit;
   }
 
+  /**
+   * Height of the surface to stand on at (x, z) for something whose feet are
+   * at `feetY`: the highest roof at or below the feet, or the street.
+   */
+  groundAt(x: number, z: number, feetY: number): number {
+    let ground = 0;
+    for (const c of this.chunks.values()) {
+      for (const f of c.footprints) {
+        if (x < f.minX || x > f.maxX || z < f.minZ || z > f.maxZ) continue;
+        if (f.top > feetY + 0.3 || f.top <= ground) continue;
+        if (pointInPolygon(x, z, f.rings)) ground = f.top;
+      }
+    }
+    return ground;
+  }
+
   /** True if the point is inside a solid footprint at the given height. */
   isInside(x: number, z: number, y = 1): boolean {
     for (const c of this.chunks.values()) {

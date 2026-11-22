@@ -17,7 +17,11 @@ import type { BuildingFeature, Lod } from './types';
  */
 
 /** Surface types understood by the facade shader (attribute b.x). */
-export const Surface = { wall: 0, flatRoof: 1, pitchedRoof: 2, solid: 3, sign: 4 } as const;
+export const Surface = { wall: 0, flatRoof: 1, pitchedRoof: 2, solid: 3, sign: 4, awning: 5 } as const;
+
+const AWNING_COLORS = [0x7a1f1f, 0x1f4a3a, 0x24385e, 0x8a6a2a, 0x2a2a2e, 0x9a3b1e].map(srgbToLinear);
+/** Height of the parapet wall around a flat roof, meters. */
+const PARAPET = 0.55;
 
 const SIGN_COLORS = [0xff3b6b, 0x29d3ff, 0xffd23f, 0xf5f5f5, 0xff5a2b, 0x55f08a, 0xc86bff].map(srgbToLinear);
 
@@ -47,11 +51,13 @@ export function generateBuilding(
     if (!upper || tierY > plan.wallTop - plan.floorH * 2) upper = null;
   }
 
+  // Roofs of any size get a parapet, which gives them a shadowed edge from the street and a rim from the air.
+  const parapet = lod < 2 && b.area > 60 ? PARAPET : 0;
   if (upper) {
     walls(w, rings, base, tierY, plan, ox, oz);
-    flatRoof(w, rings, tierY, plan, ox, oz);
+    flatRoof(w, rings, tierY, plan, ox, oz, parapet);
     walls(w, [upper], tierY, plan.wallTop, plan, ox, oz);
-    flatRoof(w, [upper], plan.wallTop, plan, ox, oz);
+    flatRoof(w, [upper], plan.wallTop, plan, ox, oz, parapet);
     if (lod === 0) rooftopUnit(w, b, upper, plan, ox, oz);
   } else if (plan.roof !== 'flat' && lod < 2) {
     walls(w, rings, base, plan.wallTop, plan, ox, oz);
@@ -60,11 +66,12 @@ export function generateBuilding(
     // Far LOD replaces a pitched roof with a flat cap at its mean height.
     const top = plan.wallTop + (plan.roof !== 'flat' ? plan.roofRise * 0.5 : 0);
     walls(w, rings, base, top, plan, ox, oz);
-    flatRoof(w, rings, top, plan, ox, oz);
+    flatRoof(w, rings, top, plan, ox, oz, plan.roof === 'flat' ? parapet : 0);
     if (lod === 0 && plan.roof === 'flat') rooftopUnit(w, b, b.rings[0], plan, ox, oz);
   }
 
   if (lod === 0 && plan.sign) sign(w, b, plan, ox, oz);
+  if (lod === 0 && plan.awning) awning(w, b, plan, ox, oz);
 }
 
 function scaledRing(r: Ring, k: number): number[] | null {
@@ -137,7 +144,31 @@ function triangulate(rings: Ring[], emit: (i0: number, i1: number, i2: number, f
   }
 }
 
-function flatRoof(w: MeshWriter, rings: Ring[], y: number, p: BuildingPlan, ox: number, oz: number): void {
+function flatRoof(w: MeshWriter, rings: Ring[], top: number, p: BuildingPlan, ox: number, oz: number, parapet = 0): void {
+  // With a parapet the deck sits below the wall top and the walls' inner faces are closed.
+  const y = top - parapet;
+  if (parapet > 0) {
+    w.color = [p.tint[0] * 0.8, p.tint[1] * 0.8, p.tint[2] * 0.8];
+    w.attrB = [Surface.solid, p.wallMat, p.seed, 0];
+    for (const r of rings) {
+      const n = r.length;
+      for (let i = 0; i < n; i += 2) {
+        const j = (i + 2) % n;
+        const dx = r[j] - r[i];
+        const dz = r[j + 1] - r[i + 1];
+        const len = Math.hypot(dx, dz);
+        if (len < 0.05) continue;
+        const nx = -dz / len; // inward
+        const nz = dx / len;
+        const a = w.vertex(r[i] - ox, y, r[i + 1] - oz, nx, 0, nz, 0, y, top);
+        const b = w.vertex(r[j] - ox, y, r[j + 1] - oz, nx, 0, nz, len, y, top);
+        const c = w.vertex(r[j] - ox, top, r[j + 1] - oz, nx, 0, nz, len, top, top);
+        const d = w.vertex(r[i] - ox, top, r[i + 1] - oz, nx, 0, nz, 0, top, top);
+        w.tri(a, b, c);
+        w.tri(a, c, d);
+      }
+    }
+  }
   w.color = p.roofTint;
   w.attrB = [Surface.flatRoof, Mat.concrete, p.seed, 0];
   const first = w.vertexCount;
@@ -346,4 +377,73 @@ function sign(w: MeshWriter, b: BuildingFeature, p: BuildingPlan, ox: number, oz
   w.attrB = [Surface.sign, Mat.metal, rng.next(), 0];
   // U axis along the wall normal so the broad faces look up and down the street.
   box(w, cx - ox, cz - oz, y0, y0 + height, nx, nz, reach / 2, 0.11);
+}
+
+/** Index and unit direction of the longest edge of a ring, or null if none exceeds `min`. */
+function longestEdge(r: Ring, min: number): { i: number; len: number; dx: number; dz: number } | null {
+  let best = -1;
+  let bestLen = min;
+  for (let i = 0; i < r.length; i += 2) {
+    const j = (i + 2) % r.length;
+    const len = Math.hypot(r[j] - r[i], r[j + 1] - r[i + 1]);
+    if (len > bestLen) {
+      bestLen = len;
+      best = i;
+    }
+  }
+  if (best < 0) return null;
+  const j = (best + 2) % r.length;
+  return { i: best, len: bestLen, dx: (r[j] - r[best]) / bestLen, dz: (r[j + 1] - r[best + 1]) / bestLen };
+}
+
+/** A quad drawn from both sides (thin cloth, seen from above and below). */
+function doubleQuad(w: MeshWriter, p: number[][], n: [number, number, number], a: number[][]): void {
+  for (const flip of [1, -1]) {
+    const i = p.map((v, k) => w.vertex(v[0], v[1], v[2], n[0] * flip, n[1] * flip, n[2] * flip, a[k][0], a[k][1], 0));
+    // Orient each copy so its winding agrees with its normal.
+    const ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
+    const vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
+    const g = (uy * vz - uz * vy) * n[0] + (uz * vx - ux * vz) * n[1] + (ux * vy - uy * vx) * n[2];
+    if (g * flip > 0) {
+      w.tri(i[0], i[1], i[2]);
+      w.tri(i[0], i[2], i[3]);
+    } else {
+      w.tri(i[0], i[2], i[1]);
+      w.tri(i[0], i[3], i[2]);
+    }
+  }
+}
+
+/** Sloped canvas awning with a hanging valance, along the main shopfront. */
+function awning(w: MeshWriter, b: BuildingFeature, p: BuildingPlan, ox: number, oz: number): void {
+  const r = b.rings[0];
+  const e = longestEdge(r, 5);
+  if (!e) return;
+  const rng = new Rng(foldId(b.id) ^ 0x7c15a3e9);
+  const nx = e.dz;
+  const nz = -e.dx;
+  const margin = 0.35;
+  const reach = rng.range(1.0, 1.5);
+  const yTop = p.baseY + p.groundH - 0.95;
+  const yLow = yTop - 0.42;
+  const x0 = r[e.i] + e.dx * margin - ox;
+  const z0 = r[e.i + 1] + e.dz * margin - oz;
+  const x1 = r[e.i] + e.dx * (e.len - margin) - ox;
+  const z1 = r[e.i + 1] + e.dz * (e.len - margin) - oz;
+  const span = e.len - margin * 2;
+  w.color = rng.pick(AWNING_COLORS);
+  w.attrB = [Surface.awning, Mat.plaster, rng.next(), 0];
+  const slope = Math.hypot(reach, 0.42);
+  doubleQuad(
+    w,
+    [[x0, yTop, z0], [x1, yTop, z1], [x1 + nx * reach, yLow, z1 + nz * reach], [x0 + nx * reach, yLow, z0 + nz * reach]],
+    [(nx * 0.42) / slope, reach / slope, (nz * 0.42) / slope],
+    [[0, 0], [span, 0], [span, 1], [0, 1]],
+  );
+  doubleQuad(
+    w,
+    [[x0 + nx * reach, yLow, z0 + nz * reach], [x1 + nx * reach, yLow, z1 + nz * reach], [x1 + nx * reach, yLow - 0.24, z1 + nz * reach], [x0 + nx * reach, yLow - 0.24, z0 + nz * reach]],
+    [nx, 0, nz],
+    [[0, 0], [span, 0], [span, 1], [0, 1]],
+  );
 }

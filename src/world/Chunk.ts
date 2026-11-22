@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CHUNK_SIZE } from '../geo/TileAddress';
 import type { MaterialLibrary } from '../graphics/MaterialLibrary';
-import { TREE_TINTS, type PropLibrary } from '../graphics/Props';
+import { CAR_PAINTS, TREE_TINTS, type PropLibrary } from '../graphics/Props';
 import type { LodLevel } from '../graphics/LODManager';
 import type { ChunkGeometry, MeshData } from './types';
 
@@ -95,6 +95,7 @@ export class Chunk {
     this.clearProps();
     if (withProps) {
       this.addInstances(this.propLib.tree, this.materials.tree, geo.trees, 6, true);
+      this.addCars(geo.cars);
       this.addInstances(this.propLib.lamp, this.materials.lamp, geo.lamps, 4, false);
       this.addInstances(this.propLib.glow, this.materials.lampGlow, geo.lamps, 4, false);
     }
@@ -127,6 +128,27 @@ export class Chunk {
     mesh.matrixAutoUpdate = false;
     mesh.computeBoundingSphere();
     if (material === this.materials.lampGlow) mesh.renderOrder = 10;
+    this.group.add(mesh);
+    this.props.push(mesh);
+  }
+
+  private addCars(data: Float32Array): void {
+    const count = data.length / 6;
+    if (count === 0) return;
+    const mesh = new THREE.InstancedMesh(this.propLib.car, this.materials.car, count);
+    for (let i = 0; i < count; i++) {
+      const o = i * 6;
+      tmpPos.set(data[o], data[o + 1], data[o + 2]);
+      tmpQuat.setFromAxisAngle(UP, data[o + 3]);
+      tmpScale.set(1, 1, data[o + 5]);
+      mesh.setMatrixAt(i, tmpMatrix.compose(tmpPos, tmpQuat, tmpScale));
+      mesh.setColorAt(i, CAR_PAINTS[data[o + 4] | 0] ?? CAR_PAINTS[0]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.matrixAutoUpdate = false;
+    mesh.computeBoundingSphere();
     this.group.add(mesh);
     this.props.push(mesh);
   }

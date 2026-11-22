@@ -1,7 +1,7 @@
 import type { LocalProjection } from './Coordinates';
 import type { OsmElement, OsmGeomPoint, OsmResponse } from './OSMProvider';
 import { cleanRing, oriented, signedArea, stitchRings } from './polygon';
-import { AreaKind, RoadKind } from '../world/types';
+import { AreaKind, RoadKind, type BuildingUse } from '../world/types';
 
 /**
  * OSM elements -> projected, classified features in local meters.
@@ -15,6 +15,7 @@ export interface RawBuilding {
   levels: number;
   minHeight: number;
   kind: string;
+  use: BuildingUse;
   area: number;
 }
 
@@ -69,6 +70,34 @@ const PATH_WIDTH: Record<string, number> = {
 };
 
 const WATER_WIDTH: Record<string, number> = { river: 30, canal: 10, stream: 3 };
+
+const USE_BY_BUILDING: Record<string, BuildingUse> = {};
+const assign = (use: BuildingUse, values: string) => values.split(' ').forEach((v) => (USE_BY_BUILDING[v] = use));
+assign('house', 'house detached semidetached_house terrace bungalow farm cabin static_caravan houseboat');
+assign('apartments', 'apartments residential dormitory public_housing council_house tower residential_tower');
+assign('retail', 'retail supermarket shop kiosk');
+assign('commercial', 'commercial hotel mall');
+assign('office', 'office skyscraper');
+assign('industrial', 'industrial warehouse manufacture factory hangar depot storage_tank silo');
+assign('civic', 'school university college hospital public civic government church cathedral chapel temple shrine mosque synagogue train_station station museum library fire_station stadium');
+assign('parking', 'parking');
+assign('minor', 'garage garages shed hut roof carport toilets greenhouse bicycle_parking service container tent');
+
+const COMMERCIAL_AMENITIES = new Set(['restaurant', 'cafe', 'bar', 'pub', 'fast_food', 'cinema', 'theatre', 'casino', 'nightclub', 'bank', 'marketplace']);
+const CIVIC_AMENITIES = new Set(['school', 'university', 'college', 'hospital', 'place_of_worship', 'townhall', 'library', 'police', 'fire_station', 'courthouse']);
+
+/** Classify a building's use from its tags; the most specific tag wins. */
+export function classifyUse(tags: Record<string, string>): BuildingUse {
+  const byBuilding = USE_BY_BUILDING[tags.building];
+  if (byBuilding === 'minor' || byBuilding === 'parking') return byBuilding;
+  if (tags.amenity === 'parking') return 'parking';
+  if (tags.shop) return tags.shop === 'mall' ? 'commercial' : 'retail';
+  if (tags.office) return 'office';
+  if (tags.tourism === 'hotel' || (tags.amenity && COMMERCIAL_AMENITIES.has(tags.amenity))) return 'commercial';
+  if (tags.amenity && CIVIC_AMENITIES.has(tags.amenity)) return 'civic';
+  if (tags.man_made === 'works') return 'industrial';
+  return byBuilding ?? 'unknown';
+}
 
 /** Parse "12", "12.5 m", "40 ft" style tag values. Returns 0 when unusable. */
 export function parseMeters(v: string | undefined): number {
@@ -171,6 +200,7 @@ export function parseOsm(response: OsmResponse, proj: LocalProjection): RawFeatu
           levels: Math.max(0, Math.round(parseFloat(tags['building:levels'] ?? '0') || 0)),
           minHeight: parseMeters(tags.min_height),
           kind: tags.building,
+          use: classifyUse(tags),
           area,
         });
       });

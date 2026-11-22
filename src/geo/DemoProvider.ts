@@ -2,7 +2,7 @@ import { Rng, hash2, hashString } from '../core/rng';
 import { tileBounds } from './TileAddress';
 import type { RawArea, RawBuilding, RawFeatures, RawRoad } from './OSMParser';
 import { signedArea } from './polygon';
-import { AreaKind, RoadKind } from '../world/types';
+import { AreaKind, RoadKind, type BuildingUse } from '../world/types';
 
 /**
  * Deterministic offline city.
@@ -148,6 +148,9 @@ function lots(out: RawFeatures, rng: Rng, blockSeed: number, x0: number, z0: num
   }
 }
 
+/** Mix of uses in the demo city, weighted toward the unknown case that real data is full of. */
+const DEMO_USES: BuildingUse[] = ['unknown', 'unknown', 'unknown', 'retail', 'apartments', 'office', 'commercial', 'apartments', 'unknown', 'retail'];
+
 function building(id: number, ring: number[], levels: number): RawBuilding {
   return {
     id: id % 2 ** 31,
@@ -156,6 +159,7 @@ function building(id: number, ring: number[], levels: number): RawBuilding {
     levels,
     minHeight: 0,
     kind: 'yes',
+    use: DEMO_USES[id % DEMO_USES.length],
     area: Math.abs(signedArea(ring)),
   };
 }

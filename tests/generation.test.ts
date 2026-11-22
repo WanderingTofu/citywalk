@@ -149,7 +149,7 @@ describe('procedural generation', () => {
 
 describe('building plans', () => {
   const footprint = (id: number, extra: Partial<BuildingFeature> = {}): BuildingFeature => ({
-    id, rings: [new Float32Array([0, 0, 12, 0, 12, 9, 0, 9])], height: 0, levels: 0, minHeight: 0, kind: 'yes', area: 108, ...extra,
+    id, rings: [new Float32Array([0, 0, 12, 0, 12, 9, 0, 9])], height: 0, levels: 0, minHeight: 0, kind: 'yes', use: 'unknown', area: 108, ...extra,
   });
 
   it('honours tagged heights and levels', () => {
@@ -185,7 +185,7 @@ describe('building plans', () => {
 
 describe('district styles', () => {
   it('every city has a usable style', () => {
-    expect(CITIES.map((c) => c.name)).toEqual(['Tokyo', 'Paris', 'New York', 'Bangkok', 'Los Angeles', 'Kyoto']);
+    expect(CITIES.map((c) => c.name)).toEqual(['Tokyo', 'Paris', 'New York', 'Bangkok', 'Los Angeles', 'Kyoto', 'Chicago']);
     for (const city of CITIES) {
       for (const d of city.districts) {
         expect(d.style.prompt.length).toBeGreaterThan(40);

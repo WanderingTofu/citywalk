@@ -20,13 +20,17 @@ function boot(): void {
   const q = new URLSearchParams(location.search);
   const quality = q.get('quality');
   const time = q.get('time');
+  const hour = Number(q.get('hour'));
   const engine = new Engine(container, {
     city: q.get('city') ?? undefined,
     district: q.get('district') ?? undefined,
     time: time === 'day' || time === 'golden' || time === 'night' ? (time as TimeOfDay) : undefined,
+    hour: q.has('hour') && hour >= 0 && hour <= 24 ? hour : undefined,
     quality: quality && quality in QUALITY ? (quality as QualityLevel) : defaultQuality(),
     mode: q.has('demo') ? 'demo' : 'live',
   });
+  // ?res=fixed pins the render resolution, for benchmarks and screenshots.
+  if (q.get('res') === 'fixed') engine.renderer.adaptive = false;
   new Controls(engine);
   engine.start();
 

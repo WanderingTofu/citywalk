@@ -9,15 +9,18 @@ import { AreaKind, RoadKind, type ChunkData } from './types';
  * Ground for one chunk: base slab, green and water areas, footpaths,
  * sidewalks, carriageways and rail, all merged into a single mesh.
  *
- * Everything lies on y = 0. Overlaps are resolved by a per-vertex `layer`
- * that the ground shader converts into a small depth bias, so stacked surfaces
- * never z-fight and the whole ground is still one draw call.
+ * Everything lies on y = 0 and overlaps freely. The stacking is a painter's
+ * algorithm: triangles are emitted with a layer key and the index buffer is
+ * sorted by it, and the ground shader writes a depth computed analytically
+ * from the ground plane, identical for every triangle covering a pixel. Ties
+ * are therefore exact and the later triangle wins, with no depth bias, no
+ * z-fighting at any distance, and one draw call for the whole ground.
  */
 
 export const Layer = { base: 0, green: 1, water: 2, paving: 3, road: 4, rail: 5 } as const;
 
-/** Sidewalk strip added to each side of a carriageway, meters. */
-const SIDEWALK = 2.2;
+/** Sidewalk strip added to each side of a carriageway, meters. Mirrored in the ground shader. */
+export const SIDEWALK = 2.2;
 
 const GRASS = srgbToLinear(0x5d7a3c);
 const FOREST = srgbToLinear(0x41602f);
@@ -32,6 +35,7 @@ export function generateGround(w: MeshWriter, chunk: ChunkData, style: StyleConf
   // Base slab.
   w.color = base;
   w.attrB = [0];
+  w.order = Layer.base;
   const s = CHUNK_SIZE;
   const a = w.vertex(0, 0, 0, 0, 1, 0, Mat.pavement, NO_MARKINGS, 0, Layer.base);
   const b = w.vertex(s, 0, 0, 0, 1, 0, Mat.pavement, NO_MARKINGS, 0, Layer.base);
@@ -54,30 +58,35 @@ export function generateGround(w: MeshWriter, chunk: ChunkData, style: StyleConf
       layer = Layer.paving;
       w.color = [paving[0] * 1.08, paving[1] * 1.08, paving[2] * 1.08];
     }
+    w.order = layer;
     polygon(w, area.ring, mat, layer, ox, oz);
   }
 
   for (const r of chunk.roads) {
+    // Ribbons in the same layer overlap at junctions: the wider road is drawn over
+    // the narrower one, with the id breaking ties, so the result is always the same.
+    const order = Math.min(r.width, 30) * 0.012 + ((Math.abs(r.id) % 89) / 89) * 0.04;
     switch (r.kind) {
       case RoadKind.Water:
         w.color = WATER;
-        ribbon(w, r.pts, r.width, Mat.water, Layer.water, false, ox, oz);
+        ribbon(w, r.pts, r.width, Mat.water, Layer.water + order, false, ox, oz);
         break;
       case RoadKind.Path:
         w.color = paving;
-        ribbon(w, r.pts, r.width, Mat.pavement, Layer.paving, false, ox, oz);
+        ribbon(w, r.pts, r.width, Mat.pavement, Layer.paving + order * 0.5, false, ox, oz);
         break;
       case RoadKind.Rail:
         w.color = GRAVEL;
-        ribbon(w, r.pts, r.width, Mat.gravel, Layer.rail, true, ox, oz);
+        ribbon(w, r.pts, r.width, Mat.gravel, Layer.rail + order, true, ox, oz);
         break;
       default:
         if (r.width >= 5) {
           w.color = paving;
-          ribbon(w, r.pts, r.width + SIDEWALK * 2, Mat.pavement, Layer.paving, false, ox, oz);
+          // The sidewalk keeps its across coordinate so the shader can draw the kerb.
+          ribbon(w, r.pts, r.width + SIDEWALK * 2, Mat.pavement, Layer.paving + 0.5 + order * 0.5, true, ox, oz);
         }
         w.color = asphalt;
-        ribbon(w, r.pts, r.width, Mat.asphalt, Layer.road, true, ox, oz);
+        ribbon(w, r.pts, r.width, Mat.asphalt, Layer.road + order, true, ox, oz);
     }
   }
 }
@@ -116,6 +125,7 @@ function ribbon(
   markings: boolean, ox: number, oz: number,
 ): void {
   const hw = width / 2;
+  w.order = layer;
   w.attrB = [hw];
   let along = 0;
   for (let i = 0; i + 3 < pts.length; i += 2) {

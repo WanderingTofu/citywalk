@@ -46,6 +46,7 @@ export function buildTile(
       levels: b.levels,
       minHeight: b.minHeight,
       kind: b.kind,
+      use: b.use,
       area: b.area,
     });
   }

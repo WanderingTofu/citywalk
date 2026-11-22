@@ -9,6 +9,11 @@ export interface PlayerSettings {
   gravity: number;
   radius: number;
   mouseSensitivity: number;
+  /** Drone cruise speed and its boosted speed, m/s. */
+  flySpeed: number;
+  flyBoost: number;
+  /** Ceiling for the drone, meters. */
+  maxAltitude: number;
 }
 
 export const DEFAULT_PLAYER: PlayerSettings = {
@@ -19,20 +24,29 @@ export const DEFAULT_PLAYER: PlayerSettings = {
   gravity: 20,
   radius: 0.38,
   mouseSensitivity: 0.0022,
+  flySpeed: 22,
+  flyBoost: 90,
+  maxAltitude: 900,
 };
 
 const KEY_FORWARD = ['KeyW', 'ArrowUp'];
 const KEY_BACK = ['KeyS', 'ArrowDown'];
 const KEY_LEFT = ['KeyA', 'ArrowLeft'];
 const KEY_RIGHT = ['KeyD', 'ArrowRight'];
+const KEY_UP = ['KeyE', 'Space'];
+const KEY_DOWN = ['KeyQ', 'KeyC', 'ControlLeft'];
 
 /**
- * First-person walking with an optional third-person chase camera.
- * Movement is integrated in small substeps against the collision system so
- * the player slides along walls and cannot tunnel through them at sprint speed.
+ * The player: walking (first or third person) or flying as a drone.
+ *
+ * Walking integrates in small substeps against the collision system, so the
+ * player slides along walls and cannot tunnel through them at sprint speed.
+ * Flying moves along the view direction with the same wall collision applied
+ * at the drone's height, so it can thread streets, clear rooftops and land on
+ * them; switching back to walking simply lets gravity take over.
  */
 export class PlayerController {
-  /** Feet position in city-local meters. */
+  /** Feet position (or the drone itself when flying) in city-local meters. */
   readonly position = new THREE.Vector3();
   readonly velocity = new THREE.Vector3();
   /** Unit horizontal view direction. */
@@ -40,8 +54,10 @@ export class PlayerController {
   yaw = 0;
   pitch = 0;
   thirdPerson = false;
+  flying = false;
   settings: PlayerSettings = { ...DEFAULT_PLAYER };
   onLockChange: (locked: boolean) => void = () => {};
+  onModeChange: () => void = () => {};
 
   private keys = new Set<string>();
   private grounded = true;
@@ -71,6 +87,11 @@ export class PlayerController {
     return document.pointerLockElement === this.dom;
   }
 
+  /** Height of the camera above the street, meters. */
+  get altitude(): number {
+    return this.flying ? this.position.y : this.position.y + this.settings.eyeHeight;
+  }
+
   private on<K extends keyof DocumentEventMap>(target: Document | HTMLElement | Window, type: K, fn: (e: DocumentEventMap[K]) => void): void {
     target.addEventListener(type, fn as EventListener);
     this.listeners.push(() => target.removeEventListener(type, fn as EventListener));
@@ -79,8 +100,10 @@ export class PlayerController {
   private bind(): void {
     this.on(document, 'keydown', (e) => {
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+      if (e.repeat) return;
       this.keys.add(e.code);
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson;
+      if (e.code === 'KeyF') this.setFlying(!this.flying);
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
     });
     this.on(document, 'keyup', (e) => this.keys.delete(e.code));
@@ -103,12 +126,29 @@ export class PlayerController {
     });
   }
 
+  /** Switch between walking and drone flight. */
+  setFlying(on: boolean): void {
+    if (on === this.flying) return;
+    this.flying = on;
+    if (on) {
+      // Lift off from eye level so the view does not jump.
+      this.position.y += this.settings.eyeHeight;
+      this.velocity.y = Math.max(this.velocity.y, 3);
+    } else {
+      // The drone's position becomes the walker's eyes; gravity does the rest.
+      this.position.y = Math.max(0, this.position.y - this.settings.eyeHeight);
+      this.grounded = false;
+    }
+    this.cameraY = this.flying ? this.position.y : this.position.y + this.settings.eyeHeight;
+    this.onModeChange();
+  }
+
   /** Place the player. Heading is degrees clockwise from north. */
-  teleport(x: number, z: number, headingDeg?: number): void {
-    this.position.set(x, 0, z);
+  teleport(x: number, z: number, headingDeg?: number, altitude = 0): void {
+    this.position.set(x, altitude, z);
     this.velocity.set(0, 0, 0);
-    this.grounded = true;
-    this.cameraY = this.settings.eyeHeight;
+    this.grounded = !this.flying;
+    this.cameraY = this.flying ? altitude : altitude + this.settings.eyeHeight;
     if (headingDeg !== undefined) {
       this.yaw = (-headingDeg * Math.PI) / 180;
       this.pitch = 0;
@@ -127,12 +167,46 @@ export class PlayerController {
   }
 
   update(dt: number): void {
-    const s = this.settings;
     // yaw = 0 looks north (-Z); positive yaw turns left (counter-clockwise from above).
     this.forward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    if (this.flying) this.fly(dt);
+    else this.walk(dt);
+    this.updateCamera(dt);
+  }
+
+  /** Move horizontally with substeps short enough that walls cannot be skipped. */
+  private moveHorizontal(dt: number, feetY: number, headY: number): void {
+    const s = this.settings;
+    const travel = Math.hypot(this.velocity.x, this.velocity.z) * dt;
+    const steps = Math.min(40, Math.max(1, Math.ceil(travel / (s.radius * 0.6))));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      this.probe.x = this.position.x + this.velocity.x * h;
+      this.probe.z = this.position.z + this.velocity.z * h;
+      const bx = this.probe.x;
+      const bz = this.probe.z;
+      if (this.collision.resolve(this.probe, s.radius, feetY, headY)) {
+        // Remove the velocity component that was pushing into the wall.
+        const nx = this.probe.x - bx;
+        const nz = this.probe.z - bz;
+        const nl = Math.hypot(nx, nz);
+        if (nl > 1e-6) {
+          const into = (this.velocity.x * nx + this.velocity.z * nz) / nl;
+          if (into < 0) {
+            this.velocity.x -= (nx / nl) * into;
+            this.velocity.z -= (nz / nl) * into;
+          }
+        }
+      }
+      this.position.x = this.probe.x;
+      this.position.z = this.probe.z;
+    }
+  }
+
+  private walk(dt: number): void {
+    const s = this.settings;
     const rightX = -this.forward.z;
     const rightZ = this.forward.x;
-
     let mx = 0;
     let mz = 0;
     if (this.pressed(KEY_FORWARD)) mz += 1;
@@ -158,50 +232,84 @@ export class PlayerController {
     }
     if (!this.grounded) this.velocity.y -= s.gravity * dt;
 
-    // Substep so each move is shorter than the collision radius.
-    const travel = Math.hypot(this.velocity.x, this.velocity.z) * dt;
-    const steps = Math.max(1, Math.ceil(travel / (s.radius * 0.6)));
-    const h = dt / steps;
-    for (let i = 0; i < steps; i++) {
-      this.probe.x = this.position.x + this.velocity.x * h;
-      this.probe.z = this.position.z + this.velocity.z * h;
-      const before = { x: this.probe.x, z: this.probe.z };
-      if (this.collision.resolve(this.probe, s.radius, this.position.y, this.position.y + s.eyeHeight + 0.1)) {
-        // Remove the velocity component that was pushing into the wall.
-        const nx = this.probe.x - before.x;
-        const nz = this.probe.z - before.z;
-        const nl = Math.hypot(nx, nz);
-        if (nl > 1e-6) {
-          const into = (this.velocity.x * nx + this.velocity.z * nz) / nl;
-          if (into < 0) {
-            this.velocity.x -= (nx / nl) * into;
-            this.velocity.z -= (nz / nl) * into;
-          }
-        }
-      }
-      this.position.x = this.probe.x;
-      this.position.z = this.probe.z;
-    }
+    this.moveHorizontal(dt, this.position.y, this.position.y + s.eyeHeight + 0.1);
 
-    // Ground: the world is flat at y = 0 (terrain elevation is not modelled yet).
+    // Stand on the street or on whatever roof is underfoot (terrain elevation is not modelled yet).
     this.position.y += this.velocity.y * dt;
-    if (this.position.y <= 0) {
-      this.position.y = 0;
+    const ground = this.position.y > 0.4 || !this.grounded ? this.collision.groundAt(this.position.x, this.position.z, this.position.y) : 0;
+    if (this.position.y <= ground) {
+      this.position.y = ground;
       this.velocity.y = 0;
       this.grounded = true;
+    } else if (this.grounded && this.position.y > ground + 0.05) {
+      this.grounded = false; // walked off an edge
     }
+  }
 
-    this.updateCamera(dt);
+  private fly(dt: number): void {
+    const s = this.settings;
+    const cp = Math.cos(this.pitch);
+    // Full 3D view direction: the drone goes where it is looking.
+    const fx = this.forward.x * cp;
+    const fy = Math.sin(this.pitch);
+    const fz = this.forward.z * cp;
+    const rightX = -this.forward.z;
+    const rightZ = this.forward.x;
+    let ahead = 0;
+    let side = 0;
+    let lift = 0;
+    if (this.pressed(KEY_FORWARD)) ahead += 1;
+    if (this.pressed(KEY_BACK)) ahead -= 1;
+    if (this.pressed(KEY_RIGHT)) side += 1;
+    if (this.pressed(KEY_LEFT)) side -= 1;
+    if (this.pressed(KEY_UP)) lift += 1;
+    if (this.pressed(KEY_DOWN)) lift -= 1;
+    const speed = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? s.flyBoost : s.flySpeed;
+    let tx = fx * ahead + rightX * side;
+    let ty = fy * ahead + lift;
+    let tz = fz * ahead + rightZ * side;
+    const len = Math.hypot(tx, ty, tz);
+    if (len > 1) {
+      tx /= len;
+      ty /= len;
+      tz /= len;
+    }
+    const k = 1 - Math.exp(-dt * 5);
+    this.velocity.x += (tx * speed - this.velocity.x) * k;
+    this.velocity.y += (ty * speed - this.velocity.y) * k;
+    this.velocity.z += (tz * speed - this.velocity.z) * k;
+
+    this.moveHorizontal(dt, this.position.y - 0.5, this.position.y + 0.5);
+
+    // Vertical: stay above the street and above any roof underneath.
+    let y = this.position.y + this.velocity.y * dt;
+    const floor = this.collision.groundAt(this.position.x, this.position.z, this.position.y) + 0.8;
+    if (y < floor) {
+      y = floor;
+      if (this.velocity.y < 0) this.velocity.y = 0;
+    }
+    if (y > s.maxAltitude) {
+      y = s.maxAltitude;
+      if (this.velocity.y > 0) this.velocity.y = 0;
+    }
+    this.position.y = y;
+    this.grounded = false;
   }
 
   private updateCamera(dt: number): void {
     const s = this.settings;
+    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+    if (this.flying) {
+      this.avatar.visible = false;
+      this.cameraY = this.position.y;
+      this.camera.position.set(this.position.x, this.position.y, this.position.z);
+      return;
+    }
     const eyeY = this.position.y + s.eyeHeight;
     // Vertical smoothing takes the snap out of landings.
     this.cameraY += (eyeY - this.cameraY) * (1 - Math.exp(-dt * 18));
     if (Math.abs(eyeY - this.cameraY) > 3) this.cameraY = eyeY;
 
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
     this.avatar.visible = this.thirdPerson;
     if (!this.thirdPerson) {
       this.camera.position.set(this.position.x, this.cameraY, this.position.z);
@@ -223,7 +331,7 @@ export class PlayerController {
     }
     this.camera.position.set(
       this.position.x + bx * dist,
-      Math.max(0.3, this.cameraY + 0.4 + by * dist),
+      Math.max(this.position.y + 0.3, this.cameraY + 0.4 + by * dist),
       this.position.z + bz * dist,
     );
   }

@@ -87,11 +87,21 @@ export interface StyleConfig {
     base: number;
     pavement: number;
     asphalt: number;
+    /** Sidewalk surface: small stone setts or large concrete slabs. */
+    paving: 'setts' | 'slabs';
+    /** 0..1, how much standing water and damp the streets hold. */
+    wetness: number;
   };
   atmosphere: {
     time: TimeOfDay;
     /** 0..1, fog thickness multiplier. */
     fog: number;
+    /** 0..1, cloud cover. */
+    clouds: number;
+    /** 0..1, how enclosed the streets are by buildings: blocks low sky in lighting and reflections. */
+    enclosure: number;
+    /** 0..1, how much the district lights its own night sky (washes out stars). */
+    skyGlow: number;
     /** 0..1, how much illuminated signage and storefront color. */
     signageDensity: number;
     /** 0..1, reserved for the Milestone 5 crowd system. */
@@ -106,5 +116,7 @@ export interface StyleConfig {
     lampSpacing: number;
     /** 0..1, street tree frequency along roads. */
     streetTrees: number;
+    /** 0..1, how full the kerbside parking is. */
+    parking: number;
   };
 }

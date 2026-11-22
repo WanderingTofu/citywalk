@@ -15,6 +15,10 @@ export interface QualitySettings {
   propRange: number;
   /** Hard cap on live chunks; the farthest are evicted first. */
   maxChunks: number;
+  /** HDR rendering with bloom. Off = tone map straight to the canvas. */
+  post: boolean;
+  /** Screen-space ambient occlusion (needs `post`). */
+  ao: boolean;
 }
 
 /**
@@ -23,10 +27,10 @@ export interface QualitySettings {
  * the player's own chunk and its neighbours at full detail.
  */
 export const QUALITY: Record<QualityLevel, QualitySettings> = {
-  low: { maxPixelRatio: 1, shadowMapSize: 0, lod0: 120, lod1: 320, lod2: 650, propRange: 200, maxChunks: 90 },
-  medium: { maxPixelRatio: 1.25, shadowMapSize: 1024, lod0: 160, lod1: 450, lod2: 850, propRange: 320, maxChunks: 140 },
-  high: { maxPixelRatio: 1.75, shadowMapSize: 2048, lod0: 200, lod1: 600, lod2: 1100, propRange: 450, maxChunks: 200 },
-  ultra: { maxPixelRatio: 2, shadowMapSize: 4096, lod0: 260, lod1: 800, lod2: 1500, propRange: 600, maxChunks: 320 },
+  low: { maxPixelRatio: 1, shadowMapSize: 0, lod0: 120, lod1: 320, lod2: 650, propRange: 200, maxChunks: 90, post: false, ao: false },
+  medium: { maxPixelRatio: 1.25, shadowMapSize: 1024, lod0: 160, lod1: 450, lod2: 850, propRange: 320, maxChunks: 140, post: true, ao: false },
+  high: { maxPixelRatio: 1.75, shadowMapSize: 2048, lod0: 200, lod1: 600, lod2: 1100, propRange: 450, maxChunks: 200, post: true, ao: true },
+  ultra: { maxPixelRatio: 2, shadowMapSize: 4096, lod0: 260, lod1: 800, lod2: 1500, propRange: 600, maxChunks: 320, post: true, ao: true },
 };
 
 export function defaultQuality(): QualityLevel {

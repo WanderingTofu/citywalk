@@ -12,7 +12,7 @@ import type { TileData } from '../world/types';
 const DB_NAME = 'citywalk';
 const STORE = 'tiles';
 /** Bump when the stored tile format or the OSM query changes. */
-export const CACHE_VERSION = 3;
+export const CACHE_VERSION = 4;
 const MAX_TILES = 240;
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 

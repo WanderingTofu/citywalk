@@ -1,11 +1,11 @@
 import { CITIES } from '../config/cities';
 import type { QualityLevel } from '../config/quality';
-import type { DataMode, Engine } from '../core/Engine';
+import type { DataMode, Engine, TimeSetting } from '../core/Engine';
 import type { TimeOfDay } from '../districts/StyleConfig';
 
 /**
- * Minimal HUD in plain DOM: world selectors, performance overlay, status
- * line, controls guide and data attribution. No framework.
+ * Minimal HUD in plain DOM: world selectors, the clock, performance overlay,
+ * status line, controls guide and data attribution. No framework.
  */
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, children: Array<Node | string> = []): HTMLElementTagNameMap[K] {
@@ -25,6 +25,12 @@ function select<T extends string>(options: Array<{ value: T; label: string }>, v
   return s;
 }
 
+function clock(hour: number): string {
+  const h = Math.floor(hour) % 24;
+  const m = Math.floor((hour - Math.floor(hour)) * 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 export class Controls {
   private readonly statRows = new Map<string, HTMLSpanElement>();
   private readonly place = el('div', { className: 'place' });
@@ -35,6 +41,11 @@ export class Controls {
   private readonly progress = document.getElementById('progress')!;
   private districtSelect!: HTMLSelectElement;
   private timeSelect!: HTMLSelectElement;
+  private hourSlider!: HTMLInputElement;
+  private hourLabel!: HTMLSpanElement;
+  private cycleButton!: HTMLButtonElement;
+  private flyButton!: HTMLButtonElement;
+  private sliding = false;
   private peakWork = 1;
 
   constructor(private readonly engine: Engine) {
@@ -50,6 +61,7 @@ export class Controls {
     this.help = this.buildHelp();
     document.body.append(this.help);
     engine.player.onLockChange = (locked) => this.help.classList.toggle('hidden', locked);
+    engine.player.onModeChange = () => this.syncButtons();
     setInterval(() => this.refresh(), 250);
     this.refresh();
   }
@@ -66,14 +78,54 @@ export class Controls {
       e.setLocation(e.state.city.id, id);
       this.syncLocation();
     });
-    this.timeSelect = select<TimeOfDay>(
-      [{ value: 'day', label: 'Day' }, { value: 'golden', label: 'Golden hour' }, { value: 'night', label: 'Night' }],
+    this.timeSelect = select<TimeSetting>(
+      [
+        { value: 'day', label: 'Day' },
+        { value: 'golden', label: 'Golden hour' },
+        { value: 'night', label: 'Night' },
+        { value: 'custom', label: 'Custom' },
+      ],
       e.state.time,
       (t) => {
-        e.setTime(t);
+        if (t !== 'custom') {
+          e.setCycle(false);
+          e.setTime(t as TimeOfDay);
+        }
+        this.syncButtons();
         this.syncUrl();
       },
     );
+
+    // The clock: drag to put the sun or moon where you want it.
+    this.hourSlider = el('input', { type: 'range', min: '0', max: '24', step: '0.05', value: String(e.lighting.hour) });
+    this.hourSlider.setAttribute('aria-label', 'Time of day');
+    this.hourLabel = el('span', { className: 'clock', textContent: clock(e.lighting.hour) });
+    this.hourSlider.addEventListener('input', () => {
+      this.sliding = true;
+      e.setCycle(false);
+      e.setHour(Number(this.hourSlider.value));
+      this.timeSelect.value = 'custom';
+      this.hourLabel.textContent = clock(Number(this.hourSlider.value));
+      this.syncButtons();
+    });
+    this.hourSlider.addEventListener('change', () => {
+      this.sliding = false;
+      this.hourSlider.blur();
+      this.syncUrl();
+    });
+    this.cycleButton = el('button', { type: 'button', textContent: 'Run day' });
+    this.cycleButton.addEventListener('click', () => {
+      e.setCycle(!e.state.cycle);
+      this.timeSelect.value = e.state.time;
+      this.syncButtons();
+      this.cycleButton.blur();
+    });
+    this.flyButton = el('button', { type: 'button', textContent: 'Fly' });
+    this.flyButton.addEventListener('click', () => {
+      e.player.setFlying(!e.player.flying);
+      this.flyButton.blur();
+    });
+
     const quality = select<QualityLevel>(
       [{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }, { value: 'ultra', label: 'Ultra' }],
       e.state.quality,
@@ -97,11 +149,14 @@ export class Controls {
         row('City', city),
         row('District', this.districtSelect),
         row('Time', this.timeSelect),
+        el('div', { className: 'timeline' }, [this.hourSlider, this.hourLabel]),
+        el('div', { className: 'buttons' }, [this.cycleButton, this.flyButton]),
         row('Graphics', quality),
         row('Data', mode),
       ]),
     );
     this.syncLocation();
+    this.syncButtons();
   }
 
   /** Refill the district list and time selector after a location change. */
@@ -113,10 +168,20 @@ export class Controls {
     this.syncUrl();
   }
 
+  private syncButtons(): void {
+    const e = this.engine;
+    this.cycleButton.textContent = e.state.cycle ? 'Stop day' : 'Run day';
+    this.cycleButton.classList.toggle('on', e.state.cycle);
+    this.flyButton.textContent = e.player.flying ? 'Walk' : 'Fly';
+    this.flyButton.classList.toggle('on', e.player.flying);
+  }
+
   /** Keep the address bar shareable. */
   private syncUrl(): void {
     const s = this.engine.state;
-    const q = new URLSearchParams({ city: s.city.id, district: s.district.id, time: s.time, quality: s.quality });
+    const q = new URLSearchParams({ city: s.city.id, district: s.district.id, quality: s.quality });
+    if (s.time === 'custom') q.set('hour', this.engine.lighting.hour.toFixed(2));
+    else q.set('time', s.time);
     if (s.mode === 'demo') q.set('demo', '1');
     history.replaceState(null, '', `?${q}`);
   }
@@ -139,10 +204,12 @@ export class Controls {
   private buildHelp(): HTMLDivElement {
     const keys = (...k: string[]) => k.map((x) => `<kbd>${x}</kbd>`).join(' ');
     const rows: Array<[string, string]> = [
-      [keys('W', 'A', 'S', 'D'), 'Walk'],
+      [keys('W', 'A', 'S', 'D'), 'Move'],
       ['Mouse', 'Look around'],
-      [keys('Shift'), 'Sprint'],
+      [keys('Shift'), 'Sprint / fly fast'],
       [keys('Space'), 'Jump'],
+      [keys('F'), 'Fly as a drone'],
+      [keys('E') + ' / ' + keys('Q'), 'Up / down while flying'],
       [keys('V'), 'First / third person'],
       [keys('Esc'), 'Release the mouse'],
     ];
@@ -177,9 +244,16 @@ export class Controls {
     this.set('heap', s.heapMb === null ? 'n/a' : `${s.heapMb.toFixed(0)} MB`);
     this.set('res', `${s.render.pixelRatio.toFixed(2)}×`);
 
+    // The clock follows the engine while a preset is being approached or the day is running.
+    if (!this.sliding) {
+      this.hourSlider.value = String(s.hour);
+      this.hourLabel.textContent = clock(s.hour);
+    }
+
     const { city, district } = e.state;
     this.place.textContent = `${city.name} — ${district.name}`;
-    this.coord.textContent = `${s.position.lat.toFixed(5)}, ${s.position.lon.toFixed(5)}`;
+    this.coord.textContent =
+      `${s.position.lat.toFixed(5)}, ${s.position.lon.toFixed(5)}` + (s.flying ? ` · ${s.position.altitude.toFixed(0)} m up` : '');
 
     // Be explicit whenever what is on screen is not real geography.
     const synthetic = w.sources.demo + w.sources.fallback;
