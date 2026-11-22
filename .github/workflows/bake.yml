@@ -37,20 +37,28 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Bake
-        run: >
-          npm run bake --
-          --radius "${{ inputs.radius || '2' }}"
-          ${{ inputs.city && format('--city {0}', inputs.city) || '' }}
-          ${{ (inputs.force || github.event_name == 'schedule') && '--force' || '' }}
-      - name: Commit tiles
+      # One city at a time, committing after each: progress shows up on the site as it
+      # happens, and a slow or failed city never costs the ones already done.
+      - name: Bake and commit, city by city
+        env:
+          RADIUS: ${{ inputs.radius || '2' }}
+          ONLY: ${{ inputs.city }}
+          FORCE: ${{ (inputs.force || github.event_name == 'schedule') && '--force' || '' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/tiles
-          if git diff --cached --quiet; then
-            echo "No tile changes."
-          else
-            git commit -m "Bake map tiles ($(date -u +%Y-%m-%d))"
-            git push
-          fi
+          cities="${ONLY:-tokyo kyoto paris new-york los-angeles bangkok chicago}"
+          for city in $cities; do
+            echo "::group::$city"
+            npm run bake -- --city "$city" --radius "$RADIUS" $FORCE || echo "::warning::nothing baked for $city"
+            echo "::endgroup::"
+            git add public/tiles
+            if git diff --cached --quiet; then
+              echo "No tile changes for $city."
+            else
+              git commit -q -m "Bake map tiles: $city ($(date -u +%Y-%m-%d))"
+              git pull -q --rebase origin main
+              git push -q
+              echo "Committed $city."
+            fi
+          done

@@ -70,6 +70,12 @@ export class OverpassError extends Error {
   }
 }
 
+const REQUEST_HEADERS: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+// Outside a browser (the bake script) there is no default identity, and Overpass asks clients for one.
+if (typeof navigator === 'undefined' || !('userAgent' in navigator) || /node/i.test(navigator.userAgent)) {
+  REQUEST_HEADERS['User-Agent'] = 'citywalk-bake/0.1';
+}
+
 /** Mirrors that failed recently are skipped until this time (ms since epoch), per mirror. */
 const benched = new Map<string, number>();
 const BENCH_MS = 90_000;
@@ -85,7 +91,7 @@ async function requestOnce(endpoint: string, query: string, timeoutMs: number, o
     const res = await fetch(endpoint, {
       method: 'POST',
       body: 'data=' + encodeURIComponent(query),
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: REQUEST_HEADERS,
       signal: ctl.signal,
     });
     if (res.status === 429 || res.status >= 500) throw new OverpassError(`Overpass ${res.status}`, true);
@@ -112,6 +118,8 @@ export interface FetchOptions {
   timeoutMs?: number;
   /** If a mirror has not answered after this long, ask the next one as well. */
   hedgeMs?: number;
+  /** How long a mirror that failed is left alone. 0 = always ask every mirror (for batch jobs that pace themselves). */
+  benchMs?: number;
 }
 
 /**
@@ -127,6 +135,7 @@ export interface FetchOptions {
 export async function fetchOsm(bounds: GeoBounds, options: FetchOptions = {}): Promise<OsmResponse> {
   const timeoutMs = options.timeoutMs ?? 12_000;
   const hedgeMs = options.hedgeMs ?? 3_000;
+  const benchMs = options.benchMs ?? BENCH_MS;
   const query = buildQuery(bounds);
   const now = Date.now();
   // Mirrors that failed in the last couple of minutes are not asked again yet. If that
@@ -165,7 +174,7 @@ export async function fetchOsm(bounds: GeoBounds, options: FetchOptions = {}): P
           pending--;
           if (settled) return;
           lastError = err;
-          benched.set(endpoint, Date.now() + BENCH_MS);
+          if (benchMs > 0) benched.set(endpoint, Date.now() + benchMs);
           if (err instanceof OverpassError && !err.retryable) next = order.length;
           if (next < order.length) launch();
           else if (pending === 0) {

@@ -31,7 +31,9 @@ const value = (name: string) => {
 const radius = Number(value('radius') ?? 2);
 const only = value('city');
 const force = flag('force');
-const delay = Number(value('delay') ?? 1500);
+const delay = Number(value('delay') ?? 3000);
+/** Pause after a failed attempt, multiplied by the attempt number: rate limits need real time to clear. */
+const backoff = Number(value('backoff') ?? 20000);
 const endpoint = value('endpoint');
 if (endpoint) OVERPASS_ENDPOINTS.splice(0, OVERPASS_ENDPOINTS.length, endpoint);
 
@@ -43,6 +45,8 @@ let baked = 0;
 let kept = 0;
 let failed = 0;
 let bytes = 0;
+/** Give up on a district after this many tiles in a row get no answer. */
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 for (const city of CITIES) {
   if (only && city.id !== only) continue;
@@ -52,9 +56,19 @@ for (const city of CITIES) {
     const proj = new LocalProjection(district.spawn);
     const id = frameId(city, district);
     console.log(`\n${city.name} / ${district.name}`);
+    let streak = 0;
 
-    for (let tz = -radius; tz < radius; tz++) {
-      for (let tx = -radius; tx < radius; tx++) {
+    // Spawn-centred order: the tiles the player sees first are baked first.
+    const order: Array<[number, number]> = [];
+    for (let tz = -radius; tz < radius; tz++) for (let tx = -radius; tx < radius; tx++) order.push([tx, tz]);
+    order.sort((a, b) => Math.hypot(a[0] + 0.5, a[1] + 0.5) - Math.hypot(b[0] + 0.5, b[1] + 0.5));
+
+    {
+      for (const [tx, tz] of order) {
+        if (streak >= MAX_CONSECUTIVE_FAILURES) {
+          console.log('  map servers are not answering; leaving the rest of this district for another run');
+          break;
+        }
         const file = join(dir, `${bakedName(tx, tz)}.json`);
         if (existsSync(file) && !force) {
           kept++;
@@ -65,7 +79,7 @@ for (const city of CITIES) {
         for (let attempt = 0; attempt < 3 && !done; attempt++) {
           try {
             // A bake can afford to wait; the app at runtime cannot.
-            const osm = await fetchOsm(proj.boundsOf(b.minX, b.minZ, b.maxX, b.maxZ), { timeoutMs: 90_000, hedgeMs: 25_000 });
+            const osm = await fetchOsm(proj.boundsOf(b.minX, b.minZ, b.maxX, b.maxZ), { timeoutMs: 45_000, hedgeMs: 8_000, benchMs: 0 });
             const tile = buildTile(id, tx, tz, parseOsm(osm, proj), 'osm');
             const json = JSON.stringify(encodeTile(tile, today));
             writeFileSync(file, json);
@@ -80,10 +94,14 @@ for (const city of CITIES) {
             done = true;
           } catch (err) {
             console.log(`  ${bakedName(tx, tz).padEnd(7)} attempt ${attempt + 1} failed: ${err instanceof Error ? err.message : err}`);
-            await sleep(4000 * (attempt + 1));
+            await sleep(backoff * (attempt + 1));
           }
         }
-        if (!done) failed++;
+        if (done) streak = 0;
+        else {
+          failed++;
+          streak++;
+        }
         await sleep(delay);
       }
     }
