@@ -44,9 +44,12 @@ The **time slider** moves the sun and moon across the sky for that city's latitu
 
 ## Deploy
 
-Pushing to `main` runs `.github/workflows/ci.yml`: typecheck, tests, build, then deploy `dist/` to GitHub Pages.
+The build is a static bundle in `dist/` with relative asset paths, so it runs from any static host or sub-path.
 
-One-time setup: in the repository's **Settings → Pages**, set **Source** to **GitHub Actions**. The build uses relative asset paths, so it works from any sub-path or static host; `dist/` can be copied anywhere.
+- **Netlify** (current): `netlify.toml` sets the build command (`npm run build`), the publish directory (`dist`) and Node 22. Connect the repository in Netlify and every push to `main` deploys.
+- **GitHub Pages** (optional): set the repository variable `DEPLOY_PAGES` to `true` and, under **Settings → Pages**, set **Source** to **GitHub Actions**. CI then publishes `dist/` on every push to `main`.
+
+Either way, `.github/workflows/ci.yml` runs typecheck, tests and the build on every push and pull request.
 
 ## How it works
 

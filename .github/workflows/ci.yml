@@ -26,13 +26,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      # GitHub Pages is optional (the site deploys on Netlify). Set the repository
+      # variable DEPLOY_PAGES=true to publish there as well.
+      - if: vars.DEPLOY_PAGES == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: vars.DEPLOY_PAGES == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:
