@@ -29,7 +29,7 @@ concurrency:
 jobs:
   bake:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,9 +37,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # One city at a time, committing after each: progress shows up on the site as it
-      # happens, and a slow or failed city never costs the ones already done.
-      - name: Bake and commit, city by city
+      # A few tiles at a time, committing after each batch: progress shows up on the site
+      # as it happens, an interrupted run loses at most one batch, and the next run
+      # carries on from wherever this one stopped.
+      - name: Bake and commit in small batches
         env:
           RADIUS: ${{ inputs.radius || '2' }}
           ONLY: ${{ inputs.city }}
@@ -47,18 +48,27 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          save() {
+            git add public/tiles
+            if ! git diff --cached --quiet; then
+              git commit -q -m "Bake map tiles: $1 ($(date -u +%Y-%m-%d))"
+              git pull -q --rebase origin main
+              git push -q
+              echo "Saved $1."
+            fi
+          }
           cities="${ONLY:-tokyo kyoto paris new-york los-angeles bangkok chicago}"
           for city in $cities; do
             echo "::group::$city"
-            npm run bake -- --city "$city" --radius "$RADIUS" $FORCE || echo "::warning::nothing baked for $city"
+            # --force applies to the first batch only; later batches fill in what is missing.
+            flags="$FORCE"
+            for batch in $(seq 1 12); do
+              status=0
+              npm run --silent bake -- --city "$city" --radius "$RADIUS" --max 3 $flags || status=$?
+              flags=""
+              save "$city"
+              # 10 = stopped at the batch limit with tiles still to do; anything else ends this city.
+              [ "$status" -eq 10 ] || break
+            done
             echo "::endgroup::"
-            git add public/tiles
-            if git diff --cached --quiet; then
-              echo "No tile changes for $city."
-            else
-              git commit -q -m "Bake map tiles: $city ($(date -u +%Y-%m-%d))"
-              git pull -q --rebase origin main
-              git push -q
-              echo "Committed $city."
-            fi
           done

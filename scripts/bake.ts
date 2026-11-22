@@ -8,6 +8,8 @@
  *   npm run bake -- --city tokyo         one city
  *   npm run bake -- --radius 3 --force   wider, and refresh tiles that already exist
  *   npm run bake -- --endpoint URL       use a specific Overpass instance
+ *   npm run bake -- --max 4              stop after four new tiles (exit code 10 if more remain),
+ *                                        so a caller can save progress in small steps
  *
  * Map data © OpenStreetMap contributors, ODbL 1.0.
  */
@@ -34,6 +36,9 @@ const force = flag('force');
 const delay = Number(value('delay') ?? 3000);
 /** Pause after a failed attempt, multiplied by the attempt number: rate limits need real time to clear. */
 const backoff = Number(value('backoff') ?? 20000);
+/** Stop after this many newly baked tiles. */
+const max = Number(value('max') ?? Infinity);
+let remaining = 0;
 const endpoint = value('endpoint');
 if (endpoint) OVERPASS_ENDPOINTS.splice(0, OVERPASS_ENDPOINTS.length, endpoint);
 else {
@@ -74,6 +79,11 @@ for (const city of CITIES) {
           console.log('  map servers are not answering; leaving the rest of this district for another run');
           break;
         }
+        if (baked >= max) {
+          // Count what is left so the caller knows whether to come back.
+          if (!existsSync(join(dir, `${bakedName(tx, tz)}.json`)) || force) remaining++;
+          continue;
+        }
         const file = join(dir, `${bakedName(tx, tz)}.json`);
         if (existsSync(file) && !force) {
           kept++;
@@ -84,7 +94,7 @@ for (const city of CITIES) {
         for (let attempt = 0; attempt < 3 && !done; attempt++) {
           try {
             // A bake can afford to wait; the app at runtime cannot.
-            const osm = await fetchOsm(proj.boundsOf(b.minX, b.minZ, b.maxX, b.maxZ), { timeoutMs: 45_000, hedgeMs: 8_000, benchMs: 0 });
+            const osm = await fetchOsm(proj.boundsOf(b.minX, b.minZ, b.maxX, b.maxZ), { timeoutMs: 120_000, hedgeMs: 15_000, benchMs: 0 });
             const tile = buildTile(id, tx, tz, parseOsm(osm, proj), 'osm');
             const json = JSON.stringify(encodeTile(tile, today));
             writeFileSync(file, json);
@@ -121,6 +131,7 @@ for (const city of CITIES) {
   }
 }
 
-console.log(`\nBaked ${baked} tiles (${(bytes / 1048576).toFixed(1)} MB), kept ${kept}, failed ${failed}.`);
+console.log(`\nBaked ${baked} tiles (${(bytes / 1048576).toFixed(1)} MB), kept ${kept}, failed ${failed}, still to do ${remaining}.`);
+if (remaining > 0) process.exit(10);
 // A partial bake is still useful, so only a bake that produced nothing at all is an error.
 if (baked === 0 && kept === 0) process.exit(1);
