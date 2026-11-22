@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { bakedName, decodeTile, type BakedIndex, type BakedTile } from '../geo/BakedTiles';
 import { LocalProjection } from '../geo/Coordinates';
 import { generateDemoFeatures } from '../geo/DemoProvider';
 import { cacheGet, cachePut } from '../geo/GeoCache';
@@ -16,6 +17,33 @@ import type { TileRequest, TileResponse, WorkerEnvelope, WorkerRequest } from '.
  * The worker is stateless between messages apart from the IndexedDB cache.
  */
 
+/** Which tiles each district has baked, fetched once per worker. */
+const bakedIndexes = new Map<string, Promise<Set<string>>>();
+
+function bakedIndex(url: string): Promise<Set<string>> {
+  let p = bakedIndexes.get(url);
+  if (!p) {
+    p = fetch(url + 'index.json')
+      .then((r) => (r.ok ? (r.json() as Promise<BakedIndex>) : null))
+      .then((index) => new Set(index?.tiles ?? []))
+      .catch(() => new Set<string>());
+    bakedIndexes.set(url, p);
+  }
+  return p;
+}
+
+async function loadBaked(req: TileRequest): Promise<TileResponse | null> {
+  const name = bakedName(req.tx, req.tz);
+  if (!(await bakedIndex(req.bakedUrl)).has(name)) return null;
+  try {
+    const res = await fetch(`${req.bakedUrl}${name}.json`);
+    if (!res.ok) return null;
+    return { tile: decodeTile((await res.json()) as BakedTile) };
+  } catch {
+    return null;
+  }
+}
+
 async function loadTile(req: TileRequest): Promise<TileResponse> {
   const { frameId, tx, tz } = req;
   if (req.mode === 'demo') {
@@ -26,6 +54,9 @@ async function loadTile(req: TileRequest): Promise<TileResponse> {
     cached.source = 'cache';
     return { tile: cached };
   }
+  // Tiles shipped with the app come first: same host, no rate limits, no waiting.
+  const baked = await loadBaked(req);
+  if (baked) return baked;
   const proj = new LocalProjection(req.origin);
   const tb = tileBounds(tx, tz);
   try {

@@ -34,6 +34,11 @@ export function generateBuilding(
   oz: number,
 ): void {
   const plan = planBuilding(b, style);
+  if (lod === 3) {
+    // Blueprint: the footprint as a slab a hand's breadth high, in the roof colour.
+    if (b.area >= 12) flatRoof(w, [b.rings[0]], 0.12, plan, ox, oz);
+    return;
+  }
   // Skyline LOD drops structures that cannot be seen from that far.
   if (lod === 2 && b.area < 30 && plan.wallTop < 8) return;
 

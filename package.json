@@ -10,16 +10,19 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bake": "vite-node scripts/bake.ts"
   },
   "dependencies": {
     "earcut": "^3.0.2",
     "three": "^0.187.0"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "@types/three": "^0.187.0",
     "typescript": "^5.9.3",
     "vite": "^8.3.8",
+    "vite-node": "^6.0.0",
     "vitest": "^5.1.1"
   }
 }

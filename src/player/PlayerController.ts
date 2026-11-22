@@ -55,6 +55,8 @@ export class PlayerController {
   pitch = 0;
   thirdPerson = false;
   flying = false;
+  /** False while the world is loading: input is ignored and the pointer is not captured. */
+  enabled = true;
   settings: PlayerSettings = { ...DEFAULT_PLAYER };
   onLockChange: (locked: boolean) => void = () => {};
   onModeChange: () => void = () => {};
@@ -100,7 +102,7 @@ export class PlayerController {
   private bind(): void {
     this.on(document, 'keydown', (e) => {
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
-      if (e.repeat) return;
+      if (e.repeat || !this.enabled) return;
       this.keys.add(e.code);
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson;
       if (e.code === 'KeyF') this.setFlying(!this.flying);
@@ -113,13 +115,14 @@ export class PlayerController {
       this.onLockChange(this.locked);
     });
     this.on(this.dom, 'mousedown', () => {
+      if (!this.enabled) return;
       this.dragging = true;
       // Pointer lock can be refused (iframes, automation); drag-to-look still works then.
       if (!this.locked) this.dom.requestPointerLock?.()?.catch?.(() => {});
     });
     this.on(document, 'mouseup', () => (this.dragging = false));
     this.on(document, 'mousemove', (e) => {
-      if (!this.locked && !this.dragging) return;
+      if (!this.enabled || (!this.locked && !this.dragging)) return;
       this.yaw -= e.movementX * this.settings.mouseSensitivity;
       this.pitch -= e.movementY * this.settings.mouseSensitivity;
       this.pitch = Math.max(-1.5, Math.min(1.5, this.pitch));
@@ -155,6 +158,11 @@ export class PlayerController {
     }
   }
 
+  /** Capture the pointer; must be called from a user gesture. */
+  capturePointer(): void {
+    if (!this.locked) this.dom.requestPointerLock?.()?.catch?.(() => {});
+  }
+
   /** Programmatic input, used by automated walkthroughs. */
   setKey(code: string, down: boolean): void {
     if (down) this.keys.add(code);
@@ -169,7 +177,10 @@ export class PlayerController {
   update(dt: number): void {
     // yaw = 0 looks north (-Z); positive yaw turns left (counter-clockwise from above).
     this.forward.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
-    if (this.flying) this.fly(dt);
+    if (!this.enabled) {
+      this.keys.clear();
+      this.velocity.set(0, 0, 0);
+    } else if (this.flying) this.fly(dt);
     else this.walk(dt);
     this.updateCamera(dt);
   }

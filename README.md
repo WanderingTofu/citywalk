@@ -46,17 +46,31 @@ The **time slider** moves the sun and moon across the sky for that city's latitu
 
 The build is a static bundle in `dist/` with relative asset paths, so it runs from any static host or sub-path.
 
-- **Netlify** (current): `netlify.toml` sets the build command (`npm run build`), the publish directory (`dist`) and Node 22. Connect the repository in Netlify and every push to `main` deploys.
-- **GitHub Pages** (optional): set the repository variable `DEPLOY_PAGES` to `true` and, under **Settings → Pages**, set **Source** to **GitHub Actions**. CI then publishes `dist/` on every push to `main`.
+- **Netlify** (current): `netlify.toml` sets the build command (`npm run build`), the publish directory (`dist`) and Node 22. Every push to `main` deploys.
+- **GitHub Pages** (optional): set the repository variable `DEPLOY_PAGES` to `true` and, under **Settings → Pages**, set **Source** to **GitHub Actions**.
 
-Either way, `.github/workflows/ci.yml` runs typecheck, tests and the build on every push and pull request.
+`.github/workflows/ci.yml` runs typecheck, tests and the build on every push and pull request.
+
+### Baking city plans
+
+```bash
+npm run bake                          # every district, 3.2 km square around its spawn point
+```
+
+```bash
+npm run bake -- --city tokyo --radius 3 --force
+```
+
+The **Bake map tiles** workflow (Actions tab → Run workflow) does the same on GitHub's runners and commits the result, which triggers a deploy. It also refreshes monthly. A district with no baked tiles still works: it loads live from Overpass, and falls back to a labelled procedural stand-in if Overpass does not answer.
 
 ## How it works
 
 - **Coordinates.** Each district has a local tangent-plane frame in meters anchored at its spawn point (+X east, +Z south).
-- **Two-level grid.** *Tiles* (800 m) are the unit of data: one Overpass request, one IndexedDB record. *Chunks* (200 m) are the unit of rendering, LOD and disposal. Addresses are pure functions of position.
-- **The detail bubble.** Each chunk's level of detail comes from its distance to the camera and to where the camera will be in 2.5 s. Height counts as distance (a drone high up sees a coarser city), and what is behind the camera counts as further away than what is in front. Missing tiles are fetched two at a time, chunks are generated in Web Workers in priority order, finished buffers are handed to the GPU within a per-frame time budget, and anything out of range is disposed. A missing tile never blocks: its chunks are simply absent, inside the haze.
-- **LOD.** Full detail with collision, grown trees, typed vehicles, awnings and signs → simplified trees and vehicle silhouettes → skyline (outer rings, flat caps, small structures dropped) → unloaded. In the shaders, every pattern fades to its average before it can alias, so detail also falls off per pixel.
+- **Blueprint, then 3D.** A city's plan (roads, footprints, parks, water) is *baked*: fetched from OpenStreetMap once, processed, and committed as small static tiles under `public/tiles/` that are served with the app. Opening a city reads its plan from the same host in one round trip. The 3D city is then raised from that plan: first the streets around you at full detail, then the flat blueprint laid out in every direction, then buildings rising outward from where you stand. Beyond the baked area, tiles are fetched live from Overpass (hedged across mirrors, with short timeouts) and cached in IndexedDB.
+- **Loading screen.** Nobody is dropped into an empty world: a progress bar tracks the data arriving and the neighbourhood being built, and the way in only opens once the streets around the spawn point exist, with collision.
+- **Two-level grid.** *Tiles* (800 m) are the unit of data: one file or request, one cache record. *Chunks* (200 m) are the unit of rendering, LOD and disposal. Addresses are pure functions of position.
+- **The detail bubble.** Each chunk's level of detail comes from its distance to the camera and to where the camera will be in 2.5 s. Height counts as distance (a drone high up sees a coarser city), and what is behind the camera counts as further away than what is in front. Chunks are generated in Web Workers in priority order, finished buffers are handed to the GPU within a per-frame time budget, and anything out of range is disposed. An endless floor sits under everything, so there is never a void beneath the sky.
+- **LOD.** Full detail with collision, grown trees, typed vehicles, awnings and signs → simplified trees and vehicle silhouettes → skyline (outer rings, flat caps, small structures dropped) → blueprint (roads and flat footprints) → unloaded. In the shaders, every pattern fades to its average before it can alias, so detail also falls off per pixel.
 - **One material for all buildings.** Walls, roofs, awnings and signs share one PBR material. Recessed windows with real parallax, rooms behind the glass (interior mapping), blinds, sills, balcony ironwork, storefronts, brick, stone, wood, tile and weathering are evaluated per pixel from a few vertex attributes. No facade textures are downloaded.
 - **One mesh for all ground.** Slab, parks, water, paving with kerbs, asphalt with markings, cracks, patches, manholes and puddles, and rail are one draw call per chunk. Overlapping layers are stacked by a painter's algorithm made exact by computing each ground pixel's depth analytically from the ground plane.
 - **Light from the sky.** The sun and moon follow solar geometry at the district's latitude. An atmospheric scattering model gives the sky, the colour of sunlight and the haze; the sky (with clouds, stars and moon) is baked into the environment map that lights and reflects in every surface. Rendering is HDR with ambient occlusion, bloom, AgX tone mapping and a final grade.
@@ -71,7 +85,8 @@ More detail: [docs/architecture.md](docs/architecture.md).
 Implemented and exercised by unit tests or headless-browser runs:
 
 - OSM pipeline: Overpass query, parsing (ways, multipolygon relations with courtyards, roads, paths, rail, waterways, parks, water, plazas, mapped trees), building-use classification, projection, chunk assignment, IndexedDB cache with eviction.
-- Mirror rotation, timeouts and backoff for Overpass; procedural fallback when it is unreachable, labelled in the UI.
+- Baked city plans served as static tiles; hedged Overpass requests with benching of failed mirrors beyond them; procedural fallback, labelled in the UI.
+- Loading screen gated on the spawn neighbourhood being built; blueprint-first streaming; automatic quality step-down when frames run slow.
 - Deterministic offline demo city (`?demo=1`).
 - Buildings from real footprints: holes, estimated heights, flat / gable / mansard roofs, parapets, tower setbacks, rooftop plant, awnings, blade signs.
 - Streaming with predictive loading, view-cone and altitude-aware LOD, hysteresis, disposal, bounded chunk and tile counts.
@@ -83,7 +98,7 @@ Implemented and exercised by unit tests or headless-browser runs:
 
 ### How it has been verified, and what has not
 
-- **Real geography.** The public Overpass servers were unreachable from the development sandbox, so the live path was verified two ways: against a mocked Overpass, and against real OSM-derived Chicago footprints and roads (from the CS2 OSM Toolkit, below) served in Overpass's response format. Fetching from the real Overpass servers in a real browser has not been observed yet.
+- **Real geography.** The public Overpass servers were unreachable from the development sandbox, so the live path was verified against a mocked Overpass and against real OSM-derived Chicago footprints and roads (from the CS2 OSM Toolkit, below) served in Overpass's response format. Chicago's baked tiles come from that extract: footprints with classified use and roads by class, without heights. Other districts are baked from Overpass by the workflow above.
 - **Performance.** Development ran in headless Chromium on a software rasterizer. That validates correctness and bounded resource use but says nothing about GPU frame rates, so **the 60 FPS desktop / 30 FPS mobile targets are unverified**. The HUD measures frame time, worst frame, draw calls and memory live. The ground and facade shaders are heavy; `low` quality turns off post-processing and shadows.
 - **Visual fidelity.** This is a long way from photorealism. Lighting and surfaces are physically motivated; geometry is still mostly extruded footprints.
 

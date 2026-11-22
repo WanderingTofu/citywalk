@@ -11,8 +11,10 @@ export interface TileRequest {
   origin: { lat: number; lon: number };
   tx: number;
   tz: number;
-  /** 'live' = cache, then Overpass, then procedural fallback. 'demo' = procedural only. */
+  /** 'live' = cache, baked tiles, Overpass, then procedural fallback. 'demo' = procedural only. */
   mode: 'live' | 'demo';
+  /** Absolute URL of this district's baked-tile folder (ends with a slash). */
+  bakedUrl: string;
 }
 
 export interface ChunkRequest {

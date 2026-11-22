@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { findDistrict, type CityConfig, type DistrictConfig } from '../config/cities';
+import { findDistrict, frameId, type CityConfig, type DistrictConfig } from '../config/cities';
 import { QUALITY, type QualityLevel } from '../config/quality';
 import type { TimeOfDay } from '../districts/StyleConfig';
+import { bakedSlug } from '../geo/BakedTiles';
 import { LocalProjection } from '../geo/Coordinates';
 import { Atmosphere } from '../graphics/Atmosphere';
 import { Lighting, presetHour } from '../graphics/Lighting';
@@ -41,6 +42,17 @@ export interface EngineState {
   cycle: boolean;
 }
 
+/** State of the loading screen. */
+export interface LoadState {
+  /** The player has been let into the world. */
+  entered: boolean;
+  /** The neighbourhood is built and the player may enter. */
+  ready: boolean;
+  /** 0..1 */
+  progress: number;
+  stage: string;
+}
+
 export interface EngineOptions {
   city?: string;
   district?: string;
@@ -49,6 +61,9 @@ export interface EngineOptions {
   quality: QualityLevel;
   mode: DataMode;
 }
+
+/** Radius around the spawn point that must exist before the player is let in, meters. */
+const READY_RADIUS = 240;
 
 /** Simulated hours per real second while the day cycle runs: a full day in four minutes. */
 const CYCLE_SPEED = 0.1;
@@ -72,6 +87,12 @@ export class Engine {
 
   private projection: LocalProjection;
   private spawnPending = true;
+  private entered = false;
+  private ready = false;
+  private progress = 0;
+  private stage = 'Starting';
+  /** Endless floor under the streamed ground, so there is never a void beneath the sky. */
+  private readonly floor: THREE.Mesh;
   private last = 0;
   private running = false;
   private elapsed = 0;
@@ -80,6 +101,9 @@ export class Engine {
   private windowTime = 0;
   private windowWorst = 0;
   private fps = 0;
+  private slowTime = 0;
+  /** Set when quality was lowered automatically, so the UI can say so. */
+  autoLowered: QualityLevel | null = null;
   private frameMs = 0;
   private worstMs = 0;
 
@@ -100,6 +124,14 @@ export class Engine {
     this.atmosphere = new Atmosphere(this.scene, this.renderer.three);
     this.streamer = new WorldStreamer(this.scene, this.materials, this.props, this.collision, QUALITY[initial.quality]);
     this.player = new PlayerController(this.camera, this.renderer.canvas, this.collision, this.scene);
+
+    this.floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(16000, 16000).rotateX(-Math.PI / 2),
+      new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 }),
+    );
+    this.floor.position.y = -0.04;
+    this.floor.receiveShadow = true;
+    this.scene.add(this.floor);
 
     this.applyQuality();
     this.loadWorld();
@@ -165,6 +197,7 @@ export class Engine {
     this.lighting.setShadowMapSize(q.shadowMapSize);
     this.streamer.setQuality(q);
     this.atmosphere.viewRange = q.lod2;
+    this.slowTime = 0;
   }
 
   private loadWorld(resetPlayer = true): void {
@@ -178,17 +211,56 @@ export class Engine {
     this.lighting.skyGlow = a.skyGlow;
     this.lighting.latitude = district.spawn.lat;
     this.streamer.setWorld({
-      // The frame id pins cached tiles to this exact origin.
-      frameId: `${city.id}:${district.id}@${district.spawn.lat.toFixed(5)},${district.spawn.lon.toFixed(5)}`,
+      frameId: frameId(city, district),
       origin: district.spawn,
       style: district.style,
       mode,
+      bakedUrl: new URL(`tiles/${bakedSlug(city.id, district.id)}/`, document.baseURI).href,
     });
+    (this.floor.material as THREE.MeshStandardMaterial).color.setHex(district.style.ground.base);
+    // Back behind the loading screen until this neighbourhood exists.
+    this.entered = false;
+    this.ready = false;
+    this.progress = 0;
+    this.stage = mode === 'demo' ? 'Generating the demo city' : 'Fetching map data';
+    this.player.enabled = false;
+    if (document.pointerLockElement) document.exitPointerLock();
     if (resetPlayer) {
       this.player.setFlying(false);
       this.player.teleport(0, 0, district.heading);
     }
     this.spawnPending = true;
+  }
+
+  // --- loading screen ------------------------------------------------------
+
+  get loadState(): LoadState {
+    return { entered: this.entered, ready: this.ready, progress: this.progress, stage: this.stage };
+  }
+
+  /** Let the player into the world. Only has an effect once it is ready. Call from a click to capture the pointer. */
+  enter(): boolean {
+    if (!this.ready) return false;
+    this.entered = true;
+    this.player.enabled = true;
+    this.player.capturePointer();
+    return true;
+  }
+
+  private updateReadiness(): void {
+    if (this.ready) return;
+    const p = this.player.position;
+    const r = this.streamer.readiness(p.x, p.z, READY_RADIUS);
+    if (r.total === 0) return;
+    // A third of the bar is data arriving, the rest is the neighbourhood rising from its plan.
+    const progress = 0.34 * (r.withData / r.total) + 0.16 * (r.built / r.total) + 0.5 * (r.raised / r.total);
+    this.progress = Math.max(this.progress, Math.min(progress, 0.99));
+    this.stage = r.withData < r.total ? (this.state.mode === 'demo' ? 'Generating the demo city' : 'Fetching map data') : 'Building streets and facades';
+    if (r.raised === r.total && r.detailed && !this.spawnPending) {
+      this.ready = true;
+      this.progress = 1;
+      this.stage = 'Ready';
+    }
   }
 
   // --- loop ---------------------------------------------------------------
@@ -218,6 +290,7 @@ export class Engine {
     this.renderer.beginFrame();
 
     this.player.update(dt);
+    this.streamer.loading = !this.entered;
     this.streamer.update(dt, this.player.position, this.player.velocity, this.player.forward);
 
     // The spawn coordinate can land inside a footprint; once the surrounding
@@ -230,6 +303,10 @@ export class Engine {
         this.player.position.z = spot.z;
       }
     }
+
+    this.updateReadiness();
+    this.floor.position.x = Math.round(this.player.position.x / 100) * 100;
+    this.floor.position.z = Math.round(this.player.position.z / 100) * 100;
 
     this.lighting.update(dt, this.player.position);
     this.atmosphere.update(dt, this.elapsed, this.lighting, this.camera, this.materials.uniforms, this.renderer.drawingHeight);
@@ -250,6 +327,16 @@ export class Engine {
       this.fps = this.frames / this.windowTime;
       this.frameMs = (this.windowTime / this.frames) * 1000;
       this.worstMs = this.windowWorst;
+      // Safety net: if frames stay slow after the resolution has already been
+      // reduced, step the quality level down rather than leave the user in a slideshow.
+      if (this.entered && this.fps < 22) this.slowTime += this.windowTime;
+      else this.slowTime = 0;
+      const lower: Partial<Record<QualityLevel, QualityLevel>> = { ultra: 'high', high: 'medium', medium: 'low' };
+      const next = lower[this.state.quality];
+      if (this.slowTime > 5 && next && this.renderer.adaptive) {
+        this.autoLowered = next;
+        this.setQuality(next);
+      }
       this.frames = 0;
       this.windowTime = 0;
       this.windowWorst = 0;

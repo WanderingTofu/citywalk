@@ -35,7 +35,7 @@ interface BuildJob {
 
 export interface StreamerStats {
   chunks: number;
-  chunksByLod: [number, number, number];
+  chunksByLod: [number, number, number, number];
   tiles: number;
   tilesLoading: number;
   buildsPending: number;
@@ -51,6 +51,22 @@ export interface WorldDescriptor {
   origin: { lat: number; lon: number };
   style: StyleConfig;
   mode: 'live' | 'demo';
+  /** Absolute URL of the district's baked-tile folder. */
+  bakedUrl: string;
+}
+
+/** How much of the neighbourhood around a point exists yet. */
+export interface Readiness {
+  /** Chunks within the radius. */
+  total: number;
+  /** ... whose map tile has arrived. */
+  withData: number;
+  /** ... that have their plan on screen. */
+  built: number;
+  /** ... that have been raised into 3D. */
+  raised: number;
+  /** The chunk under the point is fully detailed, with collision. */
+  detailed: boolean;
 }
 
 /** Seconds of player motion to look ahead when deciding what to load. */
@@ -62,6 +78,8 @@ const BEHIND_PENALTY = 0.5;
 const MAX_TILE_LOADS = 2;
 /** Main-thread budget per frame for handing finished geometry to the GPU. */
 const APPLY_BUDGET_MS = 4;
+/** ... and while the loading screen is up, when nobody is watching the frame rate. */
+const APPLY_BUDGET_LOADING_MS = 40;
 
 /**
  * Moving streaming window around the player.
@@ -90,6 +108,8 @@ export class WorldStreamer {
   private lastBuildMs = 0;
   private lastError = '';
   private night = 0;
+  /** True while the loading screen covers the view: geometry is taken in as fast as it arrives. */
+  loading = false;
   private readonly predicted = new THREE.Vector3();
 
   constructor(
@@ -130,6 +150,28 @@ export class WorldStreamer {
     for (const c of this.chunks.values()) c.setNight(night);
   }
 
+  /** Progress of the neighbourhood within `radius` of (x, z): what the loading screen waits for. */
+  readiness(x: number, z: number, radius: number): Readiness {
+    const out: Readiness = { total: 0, withData: 0, built: 0, raised: 0, detailed: this.isDetailedAt(x, z) };
+    if (!this.world) return out;
+    const c0x = Math.floor((x - radius) / CHUNK_SIZE);
+    const c1x = Math.floor((x + radius) / CHUNK_SIZE);
+    const c0z = Math.floor((z - radius) / CHUNK_SIZE);
+    const c1z = Math.floor((z + radius) / CHUNK_SIZE);
+    for (let cz = c0z; cz <= c1z; cz++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        if (distanceToChunk(x, z, cx, cz) > radius) continue;
+        out.total++;
+        const t = tileCoordOfChunk(cx, cz);
+        if (this.tiles.get(tileKey(this.world.frameId, t.x, t.z))?.state === 'ready') out.withData++;
+        const chunk = this.chunks.get(chunkKey(cx, cz));
+        if (chunk && chunk.lod !== -1) out.built++;
+        if (chunk && chunk.lod !== -1 && chunk.lod !== 3) out.raised++;
+      }
+    }
+    return out;
+  }
+
   /** True once the chunk under (x, z) is fully detailed with collision. */
   isDetailedAt(x: number, z: number): boolean {
     const c = this.chunks.get(chunkKey(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE)));
@@ -160,7 +202,7 @@ export class WorldStreamer {
     if (this.predicted.length() > q.lod0) this.predicted.setLength(q.lod0);
     this.predicted.add(pos);
 
-    const reach = q.lod2 * 1.15 + CHUNK_SIZE;
+    const reach = q.lod3 * 1.15 + CHUNK_SIZE;
     const c0x = Math.floor((Math.min(pos.x, this.predicted.x) - reach) / CHUNK_SIZE);
     const c1x = Math.floor((Math.max(pos.x, this.predicted.x) + reach) / CHUNK_SIZE);
     const c0z = Math.floor((Math.min(pos.z, this.predicted.z) - reach) / CHUNK_SIZE);
@@ -209,8 +251,19 @@ export class WorldStreamer {
         const props = wantsProps(d, q, chunk ? chunk.hasProps : false);
         if (!chunk || chunk.lod !== lod || chunk.hasProps !== props) {
           if (chunk?.pending) continue;
-          // Chunks with nothing on screen yet outrank LOD refinements of visible ones.
-          jobs.push({ key, lod: lod as Lod, props, priority: priority + (chunk && chunk.lod !== -1 ? 120 : 0) });
+          const empty = !chunk || chunk.lod === -1;
+          if (dNow <= Math.max(q.lod0 * 1.6, 250)) {
+            // Where the player stands, and the streets around it, come before everything else, straight to 3D.
+            jobs.push({ key, lod: lod as Lod, props, priority: priority - 2000 });
+          } else if (empty && lod !== 3) {
+            // Then the blueprint: the 2D plan of a chunk costs almost nothing, so lay it
+            // down everywhere before raising any more of the city in 3D.
+            jobs.push({ key, lod: 3, props: false, priority: priority * 0.25 - 400 });
+          } else {
+            // Then the 3D, nearest and in view first; refinements of what is already
+            // standing wait for chunks that are still flat.
+            jobs.push({ key, lod: lod as Lod, props, priority: priority + (chunk && chunk.lod !== -1 && chunk.lod !== 3 ? 120 : 0) });
+          }
         }
       }
     }
@@ -259,7 +312,7 @@ export class WorldStreamer {
       this.tilesInFlight++;
       const epoch = this.epoch;
       this.pool
-        .loadTile({ frameId: world.frameId, origin: world.origin, tx: tile.tx, tz: tile.tz, mode: world.mode })
+        .loadTile({ frameId: world.frameId, origin: world.origin, tx: tile.tx, tz: tile.tz, mode: world.mode, bakedUrl: world.bakedUrl })
         .then((res) => {
           if (epoch !== this.epoch) return;
           tile.data = res.tile;
@@ -332,20 +385,20 @@ export class WorldStreamer {
       } else {
         this.collision.removeChunk(key);
       }
-      if (performance.now() - start > APPLY_BUDGET_MS) break;
+      if (performance.now() - start > (this.loading ? APPLY_BUDGET_LOADING_MS : APPLY_BUDGET_MS)) break;
     }
   }
 
   // --- introspection ------------------------------------------------------
 
   get stats(): StreamerStats {
-    const byLod: [number, number, number] = [0, 0, 0];
+    const byLod: [number, number, number, number] = [0, 0, 0, 0];
     let triangles = 0;
     for (const c of this.chunks.values()) {
       if (c.lod >= 0) byLod[c.lod as Lod]++;
       triangles += c.triangles;
     }
-    const sources: Record<TileSource, number> = { osm: 0, cache: 0, demo: 0, fallback: 0 };
+    const sources: Record<TileSource, number> = { osm: 0, cache: 0, baked: 0, demo: 0, fallback: 0 };
     let loading = 0;
     for (const t of this.tiles.values()) {
       if (t.state === 'loading') loading++;

@@ -121,3 +121,29 @@ describe('OSM parsing', () => {
     expect(q).toMatch(/\[bbox:35\.\d+,139\.\d+,35\.\d+,139\.\d+\]/);
   });
 });
+
+describe('baked tiles', () => {
+  it('round-trips a tile through the compact format to decimeter precision', async () => {
+    const { decodeTile, encodeTile } = await import('../src/geo/BakedTiles');
+    const tile = buildTile('test', 0, 0, parseOsm(FIXTURE, proj), 'osm');
+    const back = decodeTile(JSON.parse(JSON.stringify(encodeTile(tile, '2026-01-01'))));
+    expect(back.source).toBe('baked');
+    expect(back.key).toBe(tile.key);
+    expect(Object.keys(back.chunks).sort()).toEqual(Object.keys(tile.chunks).sort());
+    for (const [key, chunk] of Object.entries(tile.chunks)) {
+      const other = back.chunks[key];
+      expect(other.buildings.length).toBe(chunk.buildings.length);
+      chunk.buildings.forEach((b, i) => {
+        const o = other.buildings[i];
+        expect([o.id, o.levels, o.kind, o.use]).toEqual([b.id, b.levels, b.kind, b.use]);
+        expect(o.height).toBeCloseTo(b.height, 1);
+        expect(o.rings.length).toBe(b.rings.length);
+        b.rings[0].forEach((v, k) => expect(Math.abs(o.rings[0][k] - v)).toBeLessThanOrEqual(0.051));
+      });
+      expect(other.roads.map((r) => [r.id, r.kind])).toEqual(chunk.roads.map((r) => [r.id, r.kind]));
+      other.roads.forEach((r, i) => expect(r.width).toBeCloseTo(chunk.roads[i].width, 1));
+      expect(other.areas.length).toBe(chunk.areas.length);
+      expect(other.trees.length).toBe(chunk.trees.length);
+    }
+  });
+});

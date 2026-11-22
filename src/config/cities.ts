@@ -71,6 +71,14 @@ export const CITIES: CityConfig[] = [
   },
 ];
 
+/**
+ * Identifies a district's coordinate frame. It is part of every tile key, so
+ * cached and baked tiles are tied to the exact origin they were projected with.
+ */
+export function frameId(city: CityConfig, district: DistrictConfig): string {
+  return `${city.id}:${district.id}@${district.spawn.lat.toFixed(5)},${district.spawn.lon.toFixed(5)}`;
+}
+
 export function findDistrict(cityId: string, districtId?: string): { city: CityConfig; district: DistrictConfig } {
   const city = CITIES.find((c) => c.id === cityId) ?? CITIES[0];
   const district = city.districts.find((d) => d.id === districtId) ?? city.districts[0];

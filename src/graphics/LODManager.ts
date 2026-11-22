@@ -13,9 +13,9 @@ const HYSTERESIS = 0.12;
  * the threshold, moving to a finer one happens exactly at the threshold.
  */
 export function selectLod(distance: number, q: QualitySettings, current: LodLevel): LodLevel {
-  const limits = [q.lod0, q.lod1, q.lod2];
+  const limits = [q.lod0, q.lod1, q.lod2, q.lod3];
   let level: LodLevel = -1;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     if (distance <= limits[i]) {
       level = i as Lod;
       break;

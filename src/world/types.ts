@@ -70,7 +70,8 @@ export interface ChunkData {
   trees: Float32Array;
 }
 
-export type TileSource = 'osm' | 'cache' | 'demo' | 'fallback';
+/** 'baked' = pre-fetched OSM served with the app. 'demo' and 'fallback' are synthetic. */
+export type TileSource = 'osm' | 'cache' | 'baked' | 'demo' | 'fallback';
 
 export interface TileData {
   key: string;
@@ -102,8 +103,12 @@ export interface MeshData {
   index: Uint32Array;
 }
 
-/** Level of detail for a chunk's buildings. 0 = closest. */
-export type Lod = 0 | 1 | 2;
+/**
+ * Level of detail for a chunk's buildings. 0 = closest; 3 = blueprint: the
+ * 2D plan only (ground, roads and flat footprints), which is what appears
+ * first everywhere and what the 3D city is then raised from.
+ */
+export type Lod = 0 | 1 | 2 | 3;
 
 export interface ChunkGeometry {
   cx: number;

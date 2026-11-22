@@ -70,14 +70,17 @@ export class OverpassError extends Error {
   }
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Mirror rotation is shared by all requests from this worker so a failing mirror is skipped. */
+/** Mirrors that failed recently are skipped until this time (ms since epoch), per mirror. */
+const benched = new Map<string, number>();
+const BENCH_MS = 90_000;
+/** Mirror that answered last; tried first next time. */
 let preferred = 0;
 
-async function requestOnce(endpoint: string, query: string, timeoutMs: number): Promise<OsmResponse> {
+async function requestOnce(endpoint: string, query: string, timeoutMs: number, outer: AbortSignal): Promise<OsmResponse> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const onOuter = () => ctl.abort();
+  outer.addEventListener('abort', onOuter);
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -85,47 +88,94 @@ async function requestOnce(endpoint: string, query: string, timeoutMs: number): 
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       signal: ctl.signal,
     });
-    if (res.status === 429 || res.status >= 500) {
-      throw new OverpassError(`Overpass ${res.status}`, true);
-    }
+    if (res.status === 429 || res.status >= 500) throw new OverpassError(`Overpass ${res.status}`, true);
     if (!res.ok) throw new OverpassError(`Overpass ${res.status}`, false);
     const text = await res.text();
     // Overpass reports some overload conditions as an HTML/XML page with status 200.
     if (text.charCodeAt(0) !== 123 /* { */) throw new OverpassError('Overpass returned a non-JSON body', true);
     const json = JSON.parse(text) as OsmResponse & { remark?: string };
-    if (json.remark && /timed out|out of memory/i.test(json.remark)) {
-      throw new OverpassError('Overpass query ' + json.remark, true);
-    }
+    if (json.remark && /timed out|out of memory/i.test(json.remark)) throw new OverpassError('Overpass query ' + json.remark, true);
     if (!Array.isArray(json.elements)) throw new OverpassError('Overpass response has no elements', true);
     return json;
   } catch (err) {
     if (err instanceof OverpassError) throw err;
-    throw new OverpassError(err instanceof Error ? err.message : String(err), true);
+    const aborted = ctl.signal.aborted;
+    throw new OverpassError(aborted ? 'no answer in time' : err instanceof Error ? err.message : String(err), true);
   } finally {
     clearTimeout(timer);
+    outer.removeEventListener('abort', onOuter);
   }
 }
 
+export interface FetchOptions {
+  /** Give up on a single mirror after this long. */
+  timeoutMs?: number;
+  /** If a mirror has not answered after this long, ask the next one as well. */
+  hedgeMs?: number;
+}
+
 /**
- * Fetch OSM data for a bounding box. Tries each mirror with backoff and throws
- * OverpassError once the attempts are exhausted; callers fall back to
+ * Fetch OSM data for a bounding box.
+ *
+ * Requests are hedged: the preferred mirror is asked first; if it is slow, the
+ * next mirror is asked too and whichever answers first wins (the other is
+ * cancelled). A mirror that fails is benched for a couple of minutes, so one
+ * dead server costs a single short wait, not one per tile. Throws
+ * OverpassError when every mirror has failed; callers fall back to
  * procedural data rather than blocking the world.
  */
-export async function fetchOsm(bounds: GeoBounds, attempts = 3, timeoutMs = 30000): Promise<OsmResponse> {
+export async function fetchOsm(bounds: GeoBounds, options: FetchOptions = {}): Promise<OsmResponse> {
+  const timeoutMs = options.timeoutMs ?? 12_000;
+  const hedgeMs = options.hedgeMs ?? 3_000;
   const query = buildQuery(bounds);
-  let lastError: unknown = null;
-  for (let i = 0; i < attempts; i++) {
-    const endpoint = OVERPASS_ENDPOINTS[(preferred + i) % OVERPASS_ENDPOINTS.length];
-    try {
-      const result = await requestOnce(endpoint, query, timeoutMs);
-      preferred = (preferred + i) % OVERPASS_ENDPOINTS.length;
-      return result;
-    } catch (err) {
-      lastError = err;
-      if (err instanceof OverpassError && !err.retryable) break;
-      await sleep(600 * 2 ** i + Math.random() * 400);
-    }
-  }
-  preferred = (preferred + 1) % OVERPASS_ENDPOINTS.length;
-  throw lastError instanceof Error ? lastError : new OverpassError('Overpass request failed', true);
+  const now = Date.now();
+  // Mirrors that failed in the last couple of minutes are not asked again yet. If that
+  // leaves none, fail at once: the caller falls back, and nobody waits on dead servers.
+  const order = OVERPASS_ENDPOINTS.map((_, i) => (preferred + i) % OVERPASS_ENDPOINTS.length).filter(
+    (i) => (benched.get(OVERPASS_ENDPOINTS[i]) ?? 0) <= now,
+  );
+  if (order.length === 0) throw new OverpassError('map servers are not responding', true);
+
+  const all = new AbortController();
+  return new Promise<OsmResponse>((resolve, reject) => {
+    let next = 0;
+    let pending = 0;
+    let settled = false;
+    let lastError: Error = new OverpassError('Overpass request failed', true);
+    let hedge: ReturnType<typeof setTimeout> | undefined;
+
+    const launch = () => {
+      if (settled || next >= order.length) return;
+      const index = order[next++];
+      const endpoint = OVERPASS_ENDPOINTS[index];
+      pending++;
+      clearTimeout(hedge);
+      if (next < order.length) hedge = setTimeout(launch, hedgeMs);
+      requestOnce(endpoint, query, timeoutMs, all.signal).then(
+        (result) => {
+          if (settled) return;
+          settled = true;
+          preferred = index;
+          benched.delete(endpoint);
+          clearTimeout(hedge);
+          all.abort();
+          resolve(result);
+        },
+        (err: Error) => {
+          pending--;
+          if (settled) return;
+          lastError = err;
+          benched.set(endpoint, Date.now() + BENCH_MS);
+          if (err instanceof OverpassError && !err.retryable) next = order.length;
+          if (next < order.length) launch();
+          else if (pending === 0) {
+            settled = true;
+            clearTimeout(hedge);
+            reject(lastError);
+          }
+        },
+      );
+    };
+    launch();
+  });
 }

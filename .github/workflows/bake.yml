@@ -1,0 +1,56 @@
+name: Bake map tiles
+
+# Fetches each district's OpenStreetMap data once and commits it as static tiles,
+# so the deployed app loads city plans from its own host. Run it by hand from the
+# Actions tab; it is also refreshed on the first of each month.
+on:
+  workflow_dispatch:
+    inputs:
+      radius:
+        description: Tiles to bake in each direction from the spawn point (1 tile = 800 m)
+        default: '2'
+      city:
+        description: City id to bake (blank = all)
+        default: ''
+      force:
+        description: Re-fetch tiles that already exist
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 4 1 * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bake
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Bake
+        run: >
+          npm run bake --
+          --radius "${{ inputs.radius || '2' }}"
+          ${{ inputs.city && format('--city {0}', inputs.city) || '' }}
+          ${{ (inputs.force || github.event_name == 'schedule') && '--force' || '' }}
+      - name: Commit tiles
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/tiles
+          if git diff --cached --quiet; then
+            echo "No tile changes."
+          else
+            git commit -m "Bake map tiles ($(date -u +%Y-%m-%d))"
+            git push
+          fi

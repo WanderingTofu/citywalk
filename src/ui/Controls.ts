@@ -38,6 +38,11 @@ export class Controls {
   private readonly notice = el('div', { className: 'notice' });
   private readonly loading = el('div', { className: 'loading' });
   private readonly help: HTMLDivElement;
+  private readonly gate = el('div', { id: 'gate' });
+  private readonly gateTitle = el('h2');
+  private readonly gateStage = el('p', { className: 'stage' });
+  private readonly gateBar = el('div', { className: 'bar' }, [el('i')]);
+  private readonly gateEnter = el('button', { type: 'button', className: 'enter', textContent: 'Enter' });
   private readonly progress = document.getElementById('progress')!;
   private districtSelect!: HTMLSelectElement;
   private timeSelect!: HTMLSelectElement;
@@ -60,10 +65,14 @@ export class Controls {
     );
     this.help = this.buildHelp();
     document.body.append(this.help);
-    engine.player.onLockChange = (locked) => this.help.classList.toggle('hidden', locked);
+    this.buildGate();
+    // Once inside, the small card only shows while the pointer is free.
+    engine.player.onLockChange = (locked) => this.help.classList.toggle('hidden', locked || !engine.loadState.entered);
     engine.player.onModeChange = () => this.syncButtons();
     setInterval(() => this.refresh(), 250);
+    setInterval(() => this.refreshGate(), 80);
     this.refresh();
+    this.refreshGate();
   }
 
   private buildControls(): void {
@@ -190,7 +199,7 @@ export class Controls {
     const panel = el('div', { id: 'stats', className: 'panel' });
     for (const [key, label] of [
       ['fps', 'FPS'], ['frame', 'Frame'], ['calls', 'Draw calls'], ['tris', 'Triangles'],
-      ['chunks', 'Chunks'], ['lod', 'LOD 0 / 1 / 2'], ['tiles', 'Map tiles'], ['queue', 'Queue'],
+      ['chunks', 'Chunks'], ['lod', 'LOD 0 / 1 / 2 / plan'], ['tiles', 'Map tiles'], ['queue', 'Queue'],
       ['gpu', 'Geometries'], ['heap', 'JS heap'], ['res', 'Render scale'],
     ]) {
       const value = el('span', { textContent: '–' });
@@ -201,7 +210,50 @@ export class Controls {
     document.body.append(panel);
   }
 
-  private buildHelp(): HTMLDivElement {
+  /**
+   * The loading screen. It stays up until the neighbourhood around the spawn
+   * point has been fetched and built, then offers a way in, so nobody is ever
+   * dropped into an empty world.
+   */
+  private buildGate(): void {
+    const enter = () => {
+      if (this.engine.enter()) {
+        this.gate.classList.add('hidden');
+        this.help.classList.add('hidden');
+      }
+    };
+    this.gateEnter.addEventListener('click', enter);
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Enter' && !this.engine.loadState.entered) enter();
+    });
+    this.gate.append(
+      el('div', { className: 'card' }, [
+        el('div', { className: 'brand', innerHTML: 'CITY<span>WALK</span>' }),
+        this.gateTitle,
+        this.gateStage,
+        this.gateBar,
+        this.gateEnter,
+        el('div', { className: 'keys', innerHTML: this.keyTable() }),
+      ]),
+    );
+    document.body.append(this.gate);
+  }
+
+  private refreshGate(): void {
+    const { city, district } = this.engine.state;
+    const load = this.engine.loadState;
+    if (load.entered) return;
+    this.gate.classList.remove('hidden');
+    this.help.classList.add('hidden');
+    this.gateTitle.textContent = `${city.name} — ${district.name}`;
+    this.gateStage.textContent = load.ready ? 'Ready. Press Enter or click below.' : `${load.stage}… ${Math.round(load.progress * 100)}%`;
+    (this.gateBar.firstElementChild as HTMLElement).style.transform = `scaleX(${load.progress})`;
+    this.gateBar.classList.toggle('done', load.ready);
+    this.gateEnter.disabled = !load.ready;
+    this.gateEnter.textContent = load.ready ? `Enter ${district.name}` : 'Loading';
+  }
+
+  private keyTable(): string {
     const keys = (...k: string[]) => k.map((x) => `<kbd>${x}</kbd>`).join(' ');
     const rows: Array<[string, string]> = [
       [keys('W', 'A', 'S', 'D'), 'Move'],
@@ -213,13 +265,15 @@ export class Controls {
       [keys('V'), 'First / third person'],
       [keys('Esc'), 'Release the mouse'],
     ];
+    return '<table>' + rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('') + '</table>';
+  }
+
+  /** Small card shown while the pointer is released after entering. */
+  private buildHelp(): HTMLDivElement {
     return el('div', {
       id: 'help',
-      className: 'panel',
-      innerHTML:
-        '<h2>Click to walk</h2><p>Real streets and footprints. Generated architecture.</p><table>' +
-        rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('') +
-        '</table>',
+      className: 'panel hidden',
+      innerHTML: '<h2>Click to continue</h2><p>Real streets and footprints. Generated architecture.</p>' + this.keyTable(),
     });
   }
 

@@ -46,13 +46,15 @@ describe('LOD selection', () => {
     expect(selectLod(0, q, -1)).toBe(0);
     expect(selectLod(q.lod0 + 1, q, -1)).toBe(1);
     expect(selectLod(q.lod1 + 1, q, -1)).toBe(2);
-    expect(selectLod(q.lod2 + 1, q, -1)).toBe(-1);
+    expect(selectLod(q.lod2 + 1, q, -1)).toBe(3);
+    expect(selectLod(q.lod3 + 1, q, -1)).toBe(-1);
   });
   it('holds the current level inside the hysteresis band', () => {
     expect(selectLod(q.lod0 * 1.05, q, 0)).toBe(0);
     expect(selectLod(q.lod0 * 1.2, q, 0)).toBe(1);
     expect(selectLod(q.lod2 * 1.05, q, 2)).toBe(2);
-    expect(selectLod(q.lod2 * 1.2, q, 2)).toBe(-1);
+    expect(selectLod(q.lod2 * 1.2, q, 2)).toBe(3);
+    expect(selectLod(q.lod3 * 1.2, q, 3)).toBe(-1);
     // Refinement is immediate.
     expect(selectLod(q.lod0 - 1, q, 1)).toBe(0);
   });
