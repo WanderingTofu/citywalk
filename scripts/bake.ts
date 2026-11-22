@@ -36,6 +36,11 @@ const delay = Number(value('delay') ?? 3000);
 const backoff = Number(value('backoff') ?? 20000);
 const endpoint = value('endpoint');
 if (endpoint) OVERPASS_ENDPOINTS.splice(0, OVERPASS_ENDPOINTS.length, endpoint);
+else {
+  // Further public instances, for batch use only: shared CI addresses are often rate
+  // limited by the main ones. The app itself keeps to the short list in OSMProvider.
+  OVERPASS_ENDPOINTS.push('https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.openstreetmap.fr/api/interpreter');
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const today = new Date().toISOString().slice(0, 10);
