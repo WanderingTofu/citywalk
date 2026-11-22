@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="description" content="Walk real cities in your browser. Streets and footprints from OpenStreetMap, architecture generated procedurally." />
+    <title>CITYWALK</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1116'/%3E%3Cpath d='M6 26V14h6v12zm7 0V6h7v20zm8 0V11h5v15z' fill='%23f2c14e'/%3E%3C/svg%3E" />
+    <style>
+      :root {
+        --panel: rgba(12, 14, 18, 0.72);
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #e9e7e2;
+        --dim: #9a978f;
+        --accent: #f2c14e;
+        --warn: #ff9a5c;
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0b0d10; color: var(--text); overflow: hidden; }
+      #app { position: fixed; inset: 0; }
+      #app canvas { display: block; width: 100%; height: 100%; outline: none; cursor: crosshair; }
+      .panel {
+        position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); font-size: 12px; line-height: 1.45;
+      }
+      #controls { top: 12px; left: 12px; padding: 10px 12px 12px; width: 212px; }
+      #controls h1 { margin: 0 0 8px; font-size: 13px; letter-spacing: 0.22em; font-weight: 700; }
+      #controls h1 span { color: var(--accent); }
+      #controls label { display: grid; grid-template-columns: 62px 1fr; align-items: center; gap: 8px; margin-top: 6px; color: var(--dim); }
+      select {
+        width: 100%; background: rgba(255, 255, 255, 0.06); color: var(--text); border: 1px solid var(--line);
+        border-radius: 6px; padding: 4px 6px; font: inherit; outline: none;
+      }
+      select:focus-visible { border-color: var(--accent); }
+      select option { background: #15181d; }
+      #stats { top: 12px; right: 12px; padding: 8px 10px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; min-width: 168px; }
+      #stats div { display: flex; justify-content: space-between; gap: 14px; }
+      #stats div span:first-child { color: var(--dim); }
+      #stats .big { font-size: 15px; }
+      #status { left: 12px; bottom: 12px; padding: 7px 10px; max-width: min(520px, calc(100vw - 24px)); }
+      #status .place { font-weight: 600; }
+      #status .coord { color: var(--dim); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+      #status .notice { color: var(--warn); margin-top: 3px; }
+      #status .loading { color: var(--accent); margin-top: 3px; }
+      #attribution { right: 12px; bottom: 12px; padding: 4px 8px; font-size: 11px; color: var(--dim); }
+      #attribution a { color: var(--text); text-decoration: none; }
+      #attribution a:hover { text-decoration: underline; }
+      #help {
+        left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 18px 22px; text-align: center;
+        pointer-events: none; transition: opacity 0.25s; max-width: calc(100vw - 32px);
+      }
+      #help.hidden { opacity: 0; }
+      #help h2 { margin: 0 0 4px; font-size: 18px; font-weight: 650; }
+      #help p { margin: 0 0 12px; color: var(--dim); }
+      #help table { margin: 0 auto; border-collapse: collapse; text-align: left; }
+      #help td { padding: 2px 8px; }
+      #help td:first-child { text-align: right; color: var(--dim); }
+      kbd {
+        display: inline-block; min-width: 20px; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 4px; background: rgba(255, 255, 255, 0.07); font: 11px ui-monospace, Menlo, Consolas, monospace; text-align: center;
+      }
+      #progress { position: fixed; top: 0; left: 0; height: 2px; width: 100%; background: var(--accent); transform-origin: left; transform: scaleX(0); transition: transform 0.3s, opacity 0.4s; }
+      #fatal { position: fixed; inset: 0; display: none; place-items: center; padding: 24px; text-align: center; }
+      @media (max-width: 640px) { #stats { display: none; } #controls { width: 190px; } }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="progress"></div>
+    <div id="fatal"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
